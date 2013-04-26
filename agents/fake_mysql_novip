@@ -1,0 +1,283 @@
+#!/bin/sh
+#
+#
+# Fake MySQL RA for VIPless environment 
+#
+# Description: Instead of running MySQL, this agent listens to 
+#              post-promote notification and set an IPtables DNAT
+#              rule to send redirect traffic to the correct IP
+#
+# Instruction: Set Fake_Master_IP (belwo), the default gateway is 
+#              good for that and configure the application to use 
+#              this IP for MySQL.
+#
+# Authors:  Andrew Beekhof:	Original stateful script
+#	    Yves Trudeau:	Modification for MySQL Vipless RA
+#
+#
+# Copyright (c) 2006 Andrew Beekhof
+# Copyright (c) 2012 Yves Trudeau
+#
+# This program is free software; you can redistribute it and/or modify
+# it under the terms of version 2 of the GNU General Public License as
+# published by the Free Software Foundation.
+#
+# This program is distributed in the hope that it would be useful, but
+# WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+#
+# Further, this software is distributed without any warranty that it is
+# free of the rightful claim of any third person regarding infringement
+# or the like.  Any license provided herein, whether implied or
+# otherwise, applies only to this software file.  Patent licenses, if
+# any, provided herein do not apply to combinations of this program with
+# other software, or any other product whatsoever.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program; if not, write the Free Software Foundation,
+# Inc., 59 Temple Place - Suite 330, Boston MA 02111-1307, USA.
+#
+
+#######################################################################
+# Initialization:
+
+: ${OCF_FUNCTIONS_DIR=${OCF_ROOT}/lib/heartbeat}
+. ${OCF_FUNCTIONS_DIR}/ocf-shellfuncs
+CRM_MASTER="${HA_SBIN_DIR}/crm_master -l reboot"
+IPTABLES=`which iptables`
+CRM_ATTR_REPL_INFO="${HA_SBIN_DIR}/crm_attribute --type crm_config --name ${INSTANCE_ATTR_NAME}_REPL_INFO -s mysql_replication"
+
+# The IP triggering the IPtables DNAT rule, can be almost any valid IP
+# except localhost.  This is where the application must connect to reach
+# the master. 
+Fake_Master_IP=74.125.141.105  #a google IP
+Fake_Master_port=3306
+
+#######################################################################
+
+meta_data() {
+	cat <<END
+<?xml version="1.0"?>
+<!DOCTYPE resource-agent SYSTEM "ra-api-1.dtd">
+<resource-agent name="Stateful" version="1.0">
+<version>1.0</version>
+
+<longdesc lang="en">
+This is a fake MySQL RA that use IPtables DNAT to connect to the master
+in a vipless environment.
+</longdesc>
+<shortdesc lang="en">Fake MySQL resource agent</shortdesc>
+
+<parameters>
+
+<parameter name="state" unique="1">
+<longdesc lang="en">
+Location to store the resource state in
+</longdesc>
+<shortdesc lang="en">State file</shortdesc>
+<content type="string" default="${HA_RSCTMP}/Stateful-{OCF_RESOURCE_INSTANCE}.state" />
+</parameter>
+
+</parameters>
+
+<actions>
+<action name="start"   timeout="20s" />
+<action name="stop"    timeout="20s" />
+<action name="notify" timeout="90" />
+<action name="monitor" depth="0"  timeout="20" interval="10"/>
+<action name="meta-data"  timeout="5" />
+<action name="validate-all"  timeout="20s" />
+</actions>
+</resource-agent>
+END
+	exit $OCF_SUCCESS
+}
+
+#######################################################################
+
+reset_iptables() {
+    $IPTABLES -t nat -F OUTPUT
+}
+
+set_iptables() {
+    local new_master_IP 
+
+    new_master_IP=`$CRM_ATTR_REPL_INFO --query  -q | cut -d'|' -f1`
+    
+    TESTIP=`echo "${new_master_IP}." | /bin/grep -E "([0-9]{1,3}\.){4}"`
+
+    if [ "$TESTIP" ]; then
+        $IPTABLES -t nat -I OUTPUT -d $Fake_Master_IP -m tcp -p tcp --dport $Fake_Master_port -j DNAT --to-destination $new_master_IP:$Fake_Master_port
+    fi
+
+}
+
+check_iptables() {
+
+    NBRULE=`/sbin/iptables -t nat -L OUTPUT -n -v | /bin/grep DNAT | /usr/grep -c $Fake_Master_port`
+
+    return $NBRULE
+}
+
+stateful_usage() {
+	cat <<END
+usage: $0 {start|stop|promote|demote|monitor|validate-all|meta-data}
+
+Expects to have a fully populated OCF RA-compliant environment set.
+END
+	exit $1
+}
+
+stateful_update() {
+	echo $1 > ${OCF_RESKEY_state}
+}
+
+stateful_check_state() {
+    target=$1
+    if [ -f ${OCF_RESKEY_state} ]; then
+	state=`cat ${OCF_RESKEY_state}`
+	if [ "x$target" = "x$state" ]; then
+	    return 0
+	fi
+
+    else
+	if [ "x$target" = "x" ]; then
+	    return 0
+	fi
+    fi
+
+    return 1
+}
+
+stateful_start() {
+    stateful_check_state master
+    if [ $? = 0 ]; then
+       	# CRM Error - Should never happen
+	return $OCF_RUNNING_MASTER
+    fi
+    stateful_update slave
+    set_iptables
+    $CRM_MASTER -v -1000  #This one must never be master 
+    return 0
+}
+
+stateful_demote() {
+    stateful_check_state 
+    if [ $? = 0 ]; then
+       	# CRM Error - Should never happen
+	return $OCF_NOT_RUNNING
+    fi
+    stateful_update slave
+    $CRM_MASTER -v -1000  #This one must never be master
+    return 0
+}
+
+stateful_promote() {
+    stateful_check_state 
+    if [ $? = 0 ]; then
+	return $OCF_NOT_RUNNING
+    fi
+    stateful_update master
+    $CRM_MASTER -v -1000  #This one must never be master
+    return 0
+}
+
+stateful_stop() {
+    $CRM_MASTER -D
+    stateful_check_state master
+    if [ $? = 0 ]; then
+       	# CRM Error - Should never happen
+	return $OCF_RUNNING_MASTER
+    fi
+    if [ -f ${OCF_RESKEY_state} ]; then
+	rm ${OCF_RESKEY_state}
+    fi
+    reset_iptables
+    return 0
+}
+
+stateful_monitor() {
+    stateful_check_state "master"
+    if [ $? = 0 ]; then
+	return $OCF_RUNNING_MASTER
+    fi
+
+    stateful_check_state "slave"
+    if [ $? = 0 ]; then
+	return $OCF_SUCCESS
+    fi
+
+    if [ -f ${OCF_RESKEY_state} ]; then
+	echo "File '${OCF_RESKEY_state}' exists but contains unexpected contents"
+	cat ${OCF_RESKEY_state}
+	return $OCF_ERR_GENERIC
+    fi
+    return 7
+}
+
+stateful_notify() {
+    # If not configured as a Stateful resource, we make no sense of
+    # notifications.
+    if ! ocf_is_ms; then
+        ocf_log info "This agent makes no use of notifications unless running in master/slave mode."
+        return $OCF_SUCCESS
+    fi
+
+    local type_op
+    type_op="${OCF_RESKEY_CRM_meta_notify_type}-${OCF_RESKEY_CRM_meta_notify_operation}"
+
+    case "$type_op" in
+        'pre-promote')
+            # Nothing to do now here, new replication info not yet published
+
+        ;;
+        'post-promote')
+            # Need to setup the iptables rule to point at the new master
+            
+	    master_host=`echo $OCF_RESKEY_CRM_meta_notify_promote_uname`
+            if [ "$master_host" = `uname -n` ]; then
+                ocf_log info "Ignoring my own promotion, should never happened"
+                return $OCF_SUCCESS
+            fi
+
+	    reset_iptables
+	    set_iptables
+	    
+            if [ $? -ne 0 ]; then
+                ocf_log err "Failed to setup iptables"
+                return $OCF_ERR_GENERIC
+            fi
+            return $OCF_SUCCESS
+        ;;
+        'pre-demote')
+	    reset_iptables
+	    return $OCF_SUCCESS
+	;;
+        'post-demote')
+            # Nothing for us here
+        ;;
+    esac
+	
+}
+
+stateful_validate() {
+	exit $OCF_SUCCESS
+}
+
+: ${OCF_RESKEY_state=${HA_RSCTMP}/Stateful-${OCF_RESOURCE_INSTANCE}.state}
+
+case $__OCF_ACTION in
+meta-data)	meta_data;;
+start)		stateful_start;;
+promote)	stateful_promote;;
+demote)		stateful_demote;;
+notify)		stateful_notify;;
+stop)		stateful_stop;;
+monitor)	stateful_monitor;;
+validate-all)	stateful_validate;;
+usage|help)	stateful_usage $OCF_SUCCESS;;
+*)		stateful_usage $OCF_ERR_UNIMPLEMENTED;;
+esac
+
+exit $?
+

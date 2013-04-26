@@ -1,0 +1,8 @@
+prm_binlog_parser
+ybinlogp
+ybinlogp_test
+mysql-bin*
+*.o
+*.so
+*.so.*
+*.pyc

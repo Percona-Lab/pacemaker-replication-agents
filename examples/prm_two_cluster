@@ -1,0 +1,118 @@
+#=======================================================================================
+# This configuration manages a master slave pair for two clusters: 'prod' and 'stat'.
+# All 4 nodes will be put into pacemaker so a single node failure on either cluster will 
+# not lose quorum for cluster.  
+#
+# This configuration relies on 'symmetric-cluster="false"', so nodes must be manually
+# assigned to resources (i.e., no chance of resources coming up on the wrong pair of nodes)
+#=======================================================================================
+
+# Default parameters/properties
+property $id="cib-bootstrap-options" \
+        dc-version="1.0.11-a15ead49e20f047e129882619ed075a65c1ebdfe" \
+        cluster-infrastructure="openais" \
+        expected-quorum-votes="3" \
+        stonith-enabled="false" \
+        no-quorum-policy="stop" \
+        last-lrm-refresh="1322236006" \
+        symmetric-cluster="false"
+        
+rsc_defaults $id="rsc-options" \
+      resource-stickiness="100"      
+
+#=======================
+# PROD MYSQL CLUSTER
+#=======================
+
+#define all our nodes
+node prod1 attributes IP="10.1.6.10" standby="on"
+node prod2 attributes IP="10.1.6.11" standby="on"
+
+# define our way to work with mysql
+primitive p_prod_mysql ocf:percona:mysql \
+	params config="/etc/my.cnf" pid="/var/lib/mysql/mysqld.pid" \
+               socket="/var/lib/mysql/mysql.sock" replication_user="repl" \
+               replication_passwd="replpass" max_slave_lag="15" evict_outdated_slaves="false" \
+               binary="/usr/sbin/mysqld" test_user="test" \
+               test_passwd="testpass" \
+               reader_attribute="prod_readable" \
+         op start interval="0" timeout="900s" \
+         op stop interval="0" timeout="900s" \
+        op monitor interval="5s" role="Master" OCF_CHECK_LEVEL="1" \
+        op monitor interval="2s" role="Slave" OCF_CHECK_LEVEL="1"
+        
+# define the master/slave (2 copies only)
+ms prod_mysql p_prod_mysql \
+  meta master-max="1" master-node-max="1" clone-max="2" clone-node-max="1" \
+  notify="true" globally-unique="false" target-role="Master" is-managed="true"
+
+# group membership
+location prod_mysql_members1 prod_mysql 0: prod1
+location prod_mysql_members2 prod_mysql 0: prod2
+
+
+# vips
+primitive prod_mysql_writer ocf:heartbeat:IPaddr2 \
+        params ip="10.1.6.100" nic="eth0" \
+        meta target-role="Started"
+primitive prod_mysql_reader ocf:heartbeat:IPaddr2 \
+        params ip="10.1.6.101" nic="eth0"
+
+
+# writer vip goes on the master
+colocation prod-mysql-writer-loc inf: prod_mysql_writer prod_mysql:Master
+order prod-mysql-writer-promote-before-start inf: prod_mysql:promote prod_mysql_writer:start
+
+# reader vip goes on a prod_readable host  
+colocation prod-mysql-writer-loc inf: prod_mysql_writer prod_mysql
+location prod-mysql-reader-loc prod_mysql_reader rule $id="prod-mysql-reader-rule" -inf: prod_readable eq 0
+
+# reader vip and writer vip do not like each other
+colocation prod_reader_no_like_writer -500: prod_mysql_reader prod_mysql_writer
+
+#=======================
+# STAT MYSQL CLUSTER
+#=======================
+node stat1 attributes IP="10.1.6.12" standby="on"
+node stat2 attributes IP="10.1.6.13" standby="on"
+
+# define our way to work with mysql
+primitive p_stat_mysql ocf:percona:mysql \
+	params config="/etc/my.cnf" pid="/var/lib/mysql/mysqld.pid" \
+               socket="/var/lib/mysql/mysql.sock" replication_user="repl" \
+               replication_passwd="replpass" max_slave_lag="15" evict_outdated_slaves="false" \
+               binary="/usr/sbin/mysqld" test_user="test" \
+               test_passwd="testpass" \
+               replication_info_attribute="stat_replication_info" \
+               reader_attribute="stat_readable" \
+         op start interval="0" timeout="900s" \
+         op stop interval="0" timeout="900s" \      
+        op monitor interval="5s" role="Master" OCF_CHECK_LEVEL="1" \
+        op monitor interval="2s" role="Slave" OCF_CHECK_LEVEL="1"
+
+# define the master/slave (2 copies only)
+ms stat_mysql p_stat_mysql \
+  meta master-max="1" master-node-max="1" clone-max="2" clone-node-max="1" \
+  notify="true" globally-unique="false" target-role="Master" is-managed="true"
+
+# group membership
+location stat_mysql_member1 stat_mysql 0: stat1
+location stat_mysql_member2 stat_mysql 0: stat2
+
+# vips
+primitive stat_mysql_writer ocf:heartbeat:IPaddr2 \
+        params ip="10.1.6.102" nic="eth0" \
+        meta target-role="Started"
+primitive stat_mysql_reader ocf:heartbeat:IPaddr2 \
+        params ip="10.1.6.103" nic="eth0"
+
+# writer vip goes on the master
+colocation prod-stat-mysql-writer-loc inf: stat-mysql_writer stat_mysql:Master
+order prod-stat-mysql-writer-promote-before-start inf: stat_mysql:promote stat_mysql_writer:start
+
+# reader vip goes on a stat_readable host  
+colocation prod-mysql-writer-loc inf: prod_mysql_writer prod_mysql
+location prod-stat-mysql-reader-loc stat_mysql_reader rule $id="prod-stat-mysql-reader-rule" -inf: stat_readable eq 0
+
+# reader vip and writer vip do not like each other
+colocation stat_reader_no_like_writer -500: stat_mysql_reader stat_mysql_writer

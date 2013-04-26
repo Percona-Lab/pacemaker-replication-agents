@@ -1,0 +1,60 @@
+node percona1 \
+	attributes IP="192.168.70.2" standby="off"
+node percona2 \
+	attributes IP="192.168.70.3" standby="off"
+node percona3 \
+	attributes IP="192.168.70.4" standby="off"
+node percona4 \
+	attributes IP="192.168.70.5" standby="on"
+primitive p_mysql ocf:percona:mysql \
+	params config="/etc/my.cnf" pid="/var/lib/mysql/mysqld.pid" socket="/var/lib/mysql/mysql.sock" replication_user="repl" replication_passwd="repl" max_slave_lag="15" evict_outdated_slaves="false" binary="/usr/bin/mysqld_safe" test_user="root" test_passwd="" \
+	op monitor interval="5s" role="Master" OCF_CHECK_LEVEL="1" \
+	op monitor interval="2s" role="Slave" OCF_CHECK_LEVEL="1"
+primitive reader_vip_1 ocf:heartbeat:IPaddr2 \
+	params ip="192.168.70.11" nic="eth1" \
+	meta target-role="Started"
+primitive reader_vip_2 ocf:heartbeat:IPaddr2 \
+	params ip="192.168.70.12" nic="eth1"
+primitive reader_vip_3 ocf:heartbeat:IPaddr2 \
+	params ip="192.168.70.13" nic="eth1"
+primitive writer_vip ocf:heartbeat:IPaddr2 \
+	params ip="192.168.70.10" nic="eth1" \
+	meta target-role="Started"
+ms ms_MySQL p_mysql \
+	meta master-max="1" master-node-max="1" clone-max="4" clone-node-max="1" notify="true" globally-unique="false" target-role="Master" is-managed="true"
+location No-reader-vip-1-loc reader_vip_1 \
+	rule $id="No-reader-vip-1-rule" -inf: readable eq 0
+location No-reader-vip-2-loc reader_vip_2 \
+	rule $id="No-reader-vip-2-rule" -inf: readable eq 0
+location No-reader-vip-3-loc reader_vip_3 \
+	rule $id="No-reader-vip-3-rule" -inf: readable eq 0
+colocation reader_vip_1_dislike_reader_vip_2 -200: reader_vip_1 reader_vip_2
+colocation reader_vip_1_dislike_reader_vip_3 -200: reader_vip_1 reader_vip_3
+colocation reader_vip_2_dislike_reader_vip_3 -200: reader_vip_2 reader_vip_3
+colocation writer_vip_on_master inf: writer_vip ms_MySQL:Master
+order ms_MySQL_promote_before_vip inf: ms_MySQL:promote writer_vip:start
+property $id="cib-bootstrap-options" \
+	dc-version="1.1.7-6.el6-148fccfd5985c5590cc601123c6c16e966b85d14" \
+	cluster-infrastructure="openais" \
+	expected-quorum-votes="3" \
+	stonith-enabled="false" \
+	no-quorum-policy="ignore" \
+	last-lrm-refresh="1322236006" \
+	maintenance-mode="on"
+property $id="mysql_replication" \
+	replication_info="192.168.70.2|mysql-bin.000002|107" \
+	p_mysql_REPL_INFO="percona2|mysql-bin.000009|107"
+rsc_defaults $id="rsc-options" \
+	resource-stickiness="100"
+	
+	
+	
+    CREATE TABLE `heartbeat` (
+     `ts` varchar(26) NOT NULL,
+     `server_id` int(10) unsigned NOT NULL,
+     `file` varchar(255) DEFAULT NULL,
+     `position` bigint(20) unsigned DEFAULT NULL,
+     `relay_master_log_file` varchar(255) DEFAULT NULL,
+     `exec_master_log_pos` bigint(20) unsigned DEFAULT NULL,
+     PRIMARY KEY (`ts`)
+   ) ENGINE=InnoDB DEFAULT CHARSET=latin1
