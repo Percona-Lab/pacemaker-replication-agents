@@ -1,6 +1,6 @@
-============================================== 
-How to setup Percona replication manager (PRM) 
-==============================================
+============================================= 
+Percona replication manager (PRM) setup guide
+=============================================
 
 Author: Yves Trudeau, Percona
 
@@ -12,7 +12,7 @@ June 2012
 Overview
 --------
 
-The solution we building is basically made of 4 components: Corosync, Pacemaker, the mysql resource agent and MySQL itself.  
+The Percona replication manager (PRM) is a framwork using the Linux HA resource agent Pacemaker that manages replication and provides automatic failover. This covers the installation of the framework on a set of servers.  The PRM framework is made of 4 components: Corosync, Pacemaker, the mysql resource agent and MySQL itself.  Let's review each of these in more details.
 
 Corosync
 ========
@@ -1004,3 +1004,6 @@ If you run ``crm_simulate -s -L`` you can see a list of scores for each resource
 + Prohibiting the selected backup node from being eligible for the master during the backup.
 + Using Xtrabackup's --safe-slave-backup with a PRM slave (see `Issue Here <https://github.com/jayjanssen/Percona-Pacemaker-Resource-Agents/issues/3>`_)
 
+Special slave
+  less likely master
+  sticky vip
