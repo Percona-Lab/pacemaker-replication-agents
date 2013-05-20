@@ -608,11 +608,6 @@ check_slave() {
             ocf_log warn "MySQL Slave IO threads currently not running."
 
             # Sanity check, are we at least on the right master
-            if [ "${#glb_remote_info}" -gt "0" ]; then
-                new_master=`echo $glb_remote_info | awk '{ print $1 }' | cut -d'|' -f1`
-            else
-                new_master=`$CRM_ATTR_REPL_INFO --query  -q | cut -d'|' -f1`
-            fi
 
             if [ "$master_host" != "$new_master" ]; then
                # Not pointing to the right master
@@ -1194,12 +1189,7 @@ mysql_start() {
         # node that is just joining the cluster, and the CRM may have
         # promoted a master before.
         
-        if [ "${#glb_remote_info}" -gt "0" ]; then
-            master_host=`echo $glb_remote_info | awk '{ print $1 }' | cut -d'|' -f1`
-        else
-            master_host=`$CRM_ATTR_REPL_INFO --query  -q | cut -d'|' -f1`
-        fi
-        if [ "$master_host" -a "$master_host" != $(get_local_ip) ]; then
+        if [ "$glb_master_exists" -a "$glb_cib_master" != $(get_local_ip) ]; then
             ocf_log info "Changing MySQL configuration to replicate from $master_host."
             set_master
             if [ $? -ne 0 ]; then
@@ -1582,6 +1572,14 @@ if [ "${#OCF_RESKEY_geo_remote_IP}" -gt "0" -a $glb_master_side -ne 0 ]; then
 	fi
 else
 	glb_master_exists=`echo "$resources" | grep -A2 $glb_master_resource | grep -c Masters`
+fi
+
+if [ "$glb_master_exists" -eq "1" ]; then
+    if [ "${#glb_remote_info}" -gt "0" ]; then
+        glb_cib_master=`echo $glb_remote_info | awk '{ print $1 }' | cut -d'|' -f1`
+    else
+        glb_cib_master=`$CRM_ATTR_REPL_INFO --query  -q | cut -d'|' -f1`
+    fi
 fi
 
 # What kind of method was invoked?
