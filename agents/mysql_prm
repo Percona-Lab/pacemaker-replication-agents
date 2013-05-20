@@ -22,6 +22,8 @@
 # An example usage in /etc/ha.d/haresources:
 #       node1  10.0.0.170 mysql
 #
+# Version: 201305201710
+#
 # See usage() function below for more details...
 #
 # OCF instance parameters:
@@ -1019,6 +1021,18 @@ mysql_status() {
     else
         ocf_log $1 "MySQL not running: removing old PID file"
         rm -f $OCF_RESKEY_pid
+        
+        # This is abnormal, is this host the master defined in the cib?
+        # Also confirm it succeed in starting with the socket file
+        if [ "$glb_master_exists" -eq "1" ]; then
+            if [ "$glb_cib_master" =  $(get_local_ip) -a -e "$OCF_RESKEY_socket" ]; then
+                # This is the master, let's give it a change to restart
+                # that will allow the slaves a better chance to sync
+                mysql_start
+                rc=$?
+                return $rc
+            fi
+        fi
         return $OCF_NOT_RUNNING;
     fi
 }
@@ -1568,10 +1582,10 @@ if [ "${#OCF_RESKEY_geo_remote_IP}" -gt "0" -a $glb_master_side -ne 0 ]; then
 	glb_remote_info=`$SSH $OCF_RESKEY_geo_remote_IP -l root "$CRM_ATTR_REPL_INFO --query  -q;$CRM_RES --list | grep -A2 $glb_master_resource | grep -c Masters"`
     glb_master_exists=`echo $glb_remote_info | awk '{ print $2 }'`
     if [[ -z "$glb_master_exists" ]]; then
-		glb_master_exists=0
-	fi
+        glb_master_exists=0
+    fi
 else
-	glb_master_exists=`echo "$resources" | grep -A2 $glb_master_resource | grep -c Masters`
+    glb_master_exists=`echo "$resources" | grep -A2 $glb_master_resource | grep -c Masters`
 fi
 
 if [ "$glb_master_exists" -eq "1" ]; then
