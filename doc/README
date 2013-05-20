@@ -1,0 +1,30 @@
+----------------------
+Documentation for PRM:
+----------------------
+
+PRM-setup-guide
+---------------
+
+Read this guide to install a new PRM cluster.
+
+PRM-operational-guide  
+---------------------
+
+Read this guide for the daily operation of a PRM cluster
+
+(active writing)
+
+PRM-migration-guide
+-------------------
+
+Read this guide to migration from an existing MySQL replication setup to a PRM cluster 
+
+(to come)
+
+PRM-Geographic-DR-guide
+-----------------------
+
+Read this guide if you want to deploy a PRM based solution over multiple datacenters.
+
+(to come)
+
