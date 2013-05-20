@@ -4,7 +4,7 @@ Percona replication manager (PRM) operational guide
 
 Author: Yves Trudeau, Percona
 
-State: active writing
+State: first draft completed
 
 May 2013
 
@@ -255,15 +255,111 @@ The trick here is that PRM will not re-issue a CHANGE MASTER if it detects that 
 Removing node
 -------------
 
+Depending on your messaging layer, use one of the following:
+
+Corosync:
+
+Pacemaker post 1.1.7: http://clusterlabs.org/doc/en-US/Pacemaker/1.1/html/Pacemaker_Explained/_removing_a_corosync_node.html
+
+Pacemaker pre 1.1.8: http://clusterlabs.org/doc/en-US/Pacemaker/1.0/html/Pacemaker_Explained/s-node-delete.html
+
+Heartbeat: 
+
+http://clusterlabs.org/doc/en-US/Pacemaker/1.1/html/Pacemaker_Explained/_removing_a_heartbeat_node.html
+
 ---------------
 Switching roles
 ---------------
+
+Switching roles in PRM cluster is a common task.  There're a simple and a complex way of achieving this.  If your goal is just to move the master role to another host, try::
+
+    crm resource demote ms_MySQL; sleep 5;crm resource promote ms_MySQL
+
+given the ms_MySQL is the master-slave clone set name.  That command should promote another host if, of course, another host is suitable to run as a master.  If your goal is to plan which host should be the next master, the only way is to add a location rule for the master role.  You must set the score to a high enough value to defeat the current score.  To see the current scores do::
+    
+    root@pacemaker-1-1:~# crm_simulate -L -s | grep promotion
+    p_mysql:0 promotion score on pacemaker-1-1: 1015
+    p_mysql:1 promotion score on pacemaker-1-2: 15
+
+The meanining of "1015" is simply "1000 + max_slave_lag" (max_slave_lag = 15 in this config).  With the above values, assuming you know that pacemaker-1-2 is sane to become the master and you want to favor its promotion you have to add a score of at least 1001.  It is "at least" 1001 because you may have defined a resource stickiness settings that would also need to be added.  Just to avoid confusion, let's add a score of "1500" to locate the master on pacemker 1-2 with the following rule::
+
+    location want_pacemaker_1_2_as_master ms_MySQL \
+        rule $id="want_pacemaker_1_2_as_master-rule" $role="Master" 1500: #uname eq pacemaker-1-2
+        
+After the applying the rule, the master will be pacemaker-1-2 and the promotion scores will look like::
+
+    root@pacemaker-1-1:~# crm_simulate -L -s | grep promotion
+    p_mysql:1 promotion score on pacemaker-1-2: 2515
+    p_mysql:0 promotion score on pacemaker-1-1: 15
+    
+Where this time "2515" means "1000 + 1500 + max_slave_lag".  The promotion process adds a score of 1000 for master stability reason. Once pacemaker-1-2 has been promoted, you can remove the role or simply set its score to 0 (instead of 1500).  Leaving such a rule permanently can be dangerous since it could lead to the promotion of a node that is not the best candidate for the master role.
 
 --------------
 Schema changes
 --------------
 
+Schema changes, provided that they don't break replication can easily be done with very minimal impacts on the cluster operation by following this procedure.
+
+Slaves
+------
+
+For each of the slaves, do::
+
+    crm node standby slave_node_name
+    /etc/init.d/mysql start
+    mysql -e 'start slave;alter table ....'
+    
+Once the alter table is complete, wait for the slave to catch up with the master then::
+
+    /etc/init.d/mysql stop
+    crm node online slave_node_name
+    
+The Percona server and MySQL 5.6.x dump/restore of the Innodb buffer pool feature are very useful for such setup.
+
+Master
+------
+
+Once all the slaves are done and in sync with the master, you can repeat the same procedure with the master.  In the sequence of event that with put the master in standby, a clean demotion will occur and a new master will be promoted. 
+
 -------
 Backups
 -------
 
+Backups with a PRM cluster are very similar to backups on a regular replication cluster with some exceptions.
+
+Cold backup
+-----------
+
+Put the node in standby first::
+
+   crm node standby backup_node_name 
+
+and once the backup is completed do::
+
+    crm node online backup_node_name
+    
+mysqldump
+---------
+
+Nothing specific
+
+Xtrabackup
+----------
+
+One the master, nothing specific but on the slave, if you want to include "--slave-info", you need to prevent Pacemaker to restart the slave thread when xtrabackup is running.  This is achieved using the ``backup_lockfile`` parameter which default to "/var/lock/innobackupex".  So, assuming the default value, you'll need to invoke the backup script like::
+
+    flock -xn /var/lock/innobackupex innobackupex --safe-slave-backup /tmp/mysqlbackup
+    
+
+-----------------------------------------------
+Correcting frequent reader VIP movements in VMs
+-----------------------------------------------
+
+In virtual environments, you will often find some instabilities with the reader VIPs causing rather frequent VIP movements, even on nearly idle clusters.  The source of thos VIP movements is the clock scew adjustements that causes MySQL to return for a short time an abnormally high second behind master value on a slave.  To correct this behavior, you can use the ``reader_failcount`` parameter.  This parameter forces Pacemaker to fail a number of times, depending on the setting value, because moving the VIP.  A small value, 2 or 3, is sufficient to suppress the behavior.  Make sure that the location rules you use for the reader VIPs are using "gt" and not "eq" like this::
+
+   location loc-no-reader-vip-1 reader_vip_1 \
+         rule $id="rule-no-reader-vip-1" -inf: readable gt 0
+   location loc-No-reader-vip-2 reader_vip_2 \
+         rule $id="rule-no-reader-vip-2" -inf: readable gt 0
+
+Since the domain of values for readable will be in the [0, reader_failcount] interval. 

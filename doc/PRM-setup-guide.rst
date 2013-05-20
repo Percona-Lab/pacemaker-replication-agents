@@ -362,6 +362,10 @@ reader_attribute         This parameter sets the name of the transient attribute
 reader_failcount         The number of times a monitor operation can find the slave to be unsuitable for reader VIP 
                          before failing.  Useful if there are short intermittent issues like clock adjustments in VMs.
                          *default: 1*
+                         
+geo_remote_IP            Geo DR IP to access the remote cluster, see the PRM-Geographic-DR-guide for more information.
+
+booth_master_ticket      Booth ticket name of the Geo DR master role, see the PRM-Geographic-DR-guide for more information
 
 =======================  ========================================================================================================                      
 
@@ -411,9 +415,9 @@ Reader VIP location rules
 One of the new element introduced with this solution is the addition of a transient attribute to control if a host is suitable to host a reader VIP.  The replication master are always suitable but the slave suitability is determine by the monitor operation which set the transient attribute to 1 is ok and to 0 is not.  In the MySQL primitive above, we have not set the *reader_attribute* parameter so we are using the default value "readable" for the transient attribute.  The use of the transient attribute is through a location rule which will but a score on -infinity for the VIPs to be located on unsuitable hosts.  The location rules for the reader VIPs are the following::
 
    location loc-no-reader-vip-1 reader_vip_1 \
-         rule $id="rule-no-reader-vip-1" -inf: readable eq 0
+         rule $id="rule-no-reader-vip-1" -inf: readable gt 0
    location loc-No-reader-vip-2 reader_vip_2 \
-         rule $id="rule-no-reader-vip-2" -inf: readable eq 0
+         rule $id="rule-no-reader-vip-2" -inf: readable gt 0
 
 Again, use ``crm configure edit`` to add the these rules.
 
@@ -453,9 +457,9 @@ Here's all the snippets grouped together::
    ms ms_MySQL p_mysql \
          meta master-max="1" master-node-max="1" clone-max="2" clone-node-max="1" notify="true" globally-unique="false" target-role="Master" is-managed="true"
    location loc-No-reader-vip-2 reader_vip_2 \
-         rule $id="rule-no-reader-vip-2" -inf: readable eq 0
+         rule $id="rule-no-reader-vip-2" -inf: readable gt 0
    location loc-no-reader-vip-1 reader_vip_1 \
-         rule $id="rule-no-reader-vip-1" -inf: readable eq 0
+         rule $id="rule-no-reader-vip-1" -inf: readable gt 0
    colocation writer_vip_on_master inf: writer_vip ms_MySQL:Master
    order ms_MySQL_promote_before_vip inf: ms_MySQL:promote writer_vip:start
    property $id="cib-bootstrap-options" \
@@ -772,6 +776,8 @@ where ``p_mysql`` is the primitive name and ``:0`` the clone set instance that h
 
 Configuring a report slave with a dedicated VIP
 ===============================================
+
+
 
 
 Enabling trace in the resource agent
