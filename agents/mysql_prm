@@ -22,7 +22,7 @@
 # An example usage in /etc/ha.d/haresources:
 #       node1  10.0.0.170 mysql
 #
-# Version: 201305201710
+# Version: 201305211130
 #
 # See usage() function below for more details...
 #
@@ -1028,8 +1028,13 @@ mysql_status() {
             if [ "$glb_cib_master" =  $(get_local_ip) -a -e "$OCF_RESKEY_socket" ]; then
                 # This is the master, let's give it a change to restart
                 # that will allow the slaves a better chance to sync
-                mysql_start
+                mysql_start_low
                 rc=$?
+                
+                if [ "$rc" -eq "0"]; then
+                    set_read_only OFF
+                fi
+                
                 return $rc
             fi
         fi
@@ -1096,22 +1101,73 @@ mysql_monitor() {
     fi
 }
 
+# Start MySQL in the master-slave context
 mysql_start() {
+        
     if ocf_is_ms; then
         # Initialize the ReaderVIP attribute, monitor will enable it
         set_reader_attr 0
 
         # set master_score to 0 in case mysql crashes on startup
         $CRM_MASTER -v 0
-
     fi
-
+    
     mysql_status info
     if [ $? = $OCF_SUCCESS ]; then
         ocf_log info "MySQL already running"
         return $OCF_SUCCESS
     fi
 
+    mysql_start_low
+
+    if ocf_is_ms; then
+        # We're configured as a stateful resource. We must start as
+        # slave by default. At this point we don't know if the CRM has
+        # already promoted a master. So, we simply start in read only
+        # mode.  Should already be from command line.
+        set_read_only on
+
+        # Now, let's see whether there is a master. We might be a new
+        # node that is just joining the cluster, and the CRM may have
+        # promoted a master before.
+        
+        if [ "$glb_master_exists" -a "$glb_cib_master" != $(get_local_ip) ]; then
+            ocf_log info "Changing MySQL configuration to replicate from $master_host."
+            set_master
+            if [ $? -ne 0 ]; then
+                ocf_log err "Failed to start slave"
+                return $OCF_ERR_GENERIC
+            fi
+        else
+            ocf_log info "No MySQL master present - clearing replication state"
+            unset_master
+        fi
+
+        # We also need to set a master preference, otherwise Pacemaker
+        # won't ever promote us in the absence of any explicit
+        # preference set by the administrator. We choose a low
+        # greater-than-zero preference.
+        $CRM_MASTER -v 1
+
+    fi
+
+    # Initial monitor action
+    if [ -n "$OCF_RESKEY_test_table" -a -n "$OCF_RESKEY_test_user" -a -n "$OCF_RESKEY_test_passwd" ]; then
+        OCF_CHECK_LEVEL=10
+    fi
+    mysql_monitor
+    rc=$?
+    if [ $rc != $OCF_SUCCESS -a $rc != $OCF_RUNNING_MASTER ]; then
+        ocf_log err "Failed initial monitor action"
+        return $rc
+    fi
+
+    ocf_log info "MySQL started"
+    return $OCF_SUCCESS
+}
+
+# low level MySQL start
+mysql_start_low() {
     touch $OCF_RESKEY_log
     chown $OCF_RESKEY_user:$OCF_RESKEY_group $OCF_RESKEY_log
     chmod 0640 $OCF_RESKEY_log
@@ -1191,51 +1247,8 @@ mysql_start() {
         fi
         sleep 2
     done
-
-    if ocf_is_ms; then
-        # We're configured as a stateful resource. We must start as
-        # slave by default. At this point we don't know if the CRM has
-        # already promoted a master. So, we simply start in read only
-        # mode.  Should already be from command line.
-        set_read_only on
-
-        # Now, let's see whether there is a master. We might be a new
-        # node that is just joining the cluster, and the CRM may have
-        # promoted a master before.
-        
-        if [ "$glb_master_exists" -a "$glb_cib_master" != $(get_local_ip) ]; then
-            ocf_log info "Changing MySQL configuration to replicate from $master_host."
-            set_master
-            if [ $? -ne 0 ]; then
-                ocf_log err "Failed to start slave"
-                return $OCF_ERR_GENERIC
-            fi
-        else
-            ocf_log info "No MySQL master present - clearing replication state"
-            unset_master
-        fi
-
-        # We also need to set a master preference, otherwise Pacemaker
-        # won't ever promote us in the absence of any explicit
-        # preference set by the administrator. We choose a low
-        # greater-than-zero preference.
-        $CRM_MASTER -v 1
-
-    fi
-
-    # Initial monitor action
-    if [ -n "$OCF_RESKEY_test_table" -a -n "$OCF_RESKEY_test_user" -a -n "$OCF_RESKEY_test_passwd" ]; then
-        OCF_CHECK_LEVEL=10
-    fi
-    mysql_monitor
-    rc=$?
-    if [ $rc != $OCF_SUCCESS -a $rc != $OCF_RUNNING_MASTER ]; then
-        ocf_log err "Failed initial monitor action"
-        return $rc
-    fi
-
-    ocf_log info "MySQL started"
-    return $OCF_SUCCESS
+    
+    return $OCF_SUCCESS    
 }
 
 mysql_stop() {
