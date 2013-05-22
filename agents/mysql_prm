@@ -22,7 +22,7 @@
 # An example usage in /etc/ha.d/haresources:
 #       node1  10.0.0.170 mysql
 #
-# Version: 201305211130
+# Version: 201305221645
 #
 # See usage() function below for more details...
 #
@@ -1004,6 +1004,8 @@ mysql_validate() {
 }
 
 mysql_status() {
+    local last_restart_ts
+    
     if [ ! -e $OCF_RESKEY_pid ]; then
         ocf_log $1 "MySQL is not running"
         return $OCF_NOT_RUNNING;
@@ -1027,11 +1029,24 @@ mysql_status() {
         if [ "$glb_master_exists" -eq "1" ]; then
             if [ "$glb_cib_master" =  $(get_local_ip) -a -e "$OCF_RESKEY_socket" ]; then
                 # This is the master, let's give it a change to restart
-                # that will allow the slaves a better chance to sync
+                # that will allow the slaves a better chance to sync but we
+                # need to avoid letting it restart forever.  Has it tried to 
+                # restart within the last hour
+                last_crash_ts=`$CRM_ATTR -l reboot --name ${INSTANCE_ATTR_NAME}_last_crash --query -q`
+                
+                if [[ ! -z $last_crash_ts ]]; then
+                    if [ `date +%s` -lt "$((${last_crash_ts}+3600))" ]; then
+                        # too soon, multiple crash, let's error out
+                        return $OCF_NOT_RUNNING;
+                    fi
+                else
+                    $CRM_ATTR -l reboot --name ${INSTANCE_ATTR_NAME}_last_crash -v `date +%s`
+                fi
+
                 mysql_start_low
                 rc=$?
                 
-                if [ "$rc" -eq "0"]; then
+                if [ "$rc" -eq "0" ]; then
                     set_read_only OFF
                 fi
                 
