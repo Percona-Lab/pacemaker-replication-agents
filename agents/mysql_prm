@@ -22,7 +22,7 @@
 # An example usage in /etc/ha.d/haresources:
 #       node1  10.0.0.170 mysql
 #
-# Version: 201305221645
+# Version: 201305241715
 #
 # See usage() function below for more details...
 #
@@ -1039,9 +1039,9 @@ mysql_status() {
                         # too soon, multiple crash, let's error out
                         return $OCF_NOT_RUNNING;
                     fi
-                else
-                    $CRM_ATTR -l reboot --name ${INSTANCE_ATTR_NAME}_last_crash -v `date +%s`
                 fi
+
+                $CRM_ATTR -l reboot --name ${INSTANCE_ATTR_NAME}_last_crash -v `date +%s`
 
                 mysql_start_low
                 rc=$?
