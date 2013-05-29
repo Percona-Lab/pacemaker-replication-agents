@@ -1,0 +1,17 @@
+The Booth Cluster Ticket Manager
+    
+Booth manages the ticket which authorizes one of the cluster sites located in
+geographically dispersed distances to run certain resources. It is designed to
+be an add-on of Pacemaker, which extends Pacemaker to support geographically
+distributed clustering.
+    
+Booth includes an implementation of Paxos and Paxos Lease algorithm, which
+guarantees the distributed consensus among different cluster sites. One
+development goal of the Paxos implementation is to be flexible enough so that
+it can also be used by some other projects which need Paxos.
+
+Now, the Booth is still in heavy development, review and comments are highly
+appreciated ;)
+    
+Regards,
+Jiaju Zhang <jjzhang@suse.de>

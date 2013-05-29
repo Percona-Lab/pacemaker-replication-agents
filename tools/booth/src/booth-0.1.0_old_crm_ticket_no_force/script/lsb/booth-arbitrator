@@ -1,0 +1,119 @@
+#!/bin/bash
+#
+# BOOTH daemon init script for LSB-compliant Linux distributions.
+#
+# booth-arbitrator	BOOTH arbitrator daemon
+#
+# chkconfig: - 20 20
+# processname:  boothd
+# pidfile:      /var/run/booth.pid
+# description:  Cluster Ticket Registry
+### BEGIN INIT INFO
+# Provides: booth
+# Required-Start: $network $syslog
+# Required-Stop: $network $syslog
+# Should-Start:
+# Should-Stop:
+# Default-Start: 3 5
+# Default-Stop: 0 6
+# Short-Description: start and stop BOOTH arbitrator daemon
+### END INIT INFO
+
+prog="boothd"
+exec="/usr/sbin/$prog"
+type="arbitrator"       
+lockfile="/var/run/booth.pid"
+
+. /etc/rc.status
+
+internal_status() {
+	checkproc $exec > /dev/null 2>&1
+	return $?
+}
+
+check_status() {
+	internal_status
+	if [ "$?" -eq 0 ];then
+		pidnum=$(cat $lockfile)
+		if cat /proc/$pidnum/cmdline |grep $type > /dev/null 2>&1 ; then
+			return 0  #arbitrator daemon is Running
+		else
+			return 1  #site daemon is Running
+		fi
+	else
+		return 2 #BOOTH daemon is not running    
+	fi    
+}
+
+status() {
+	echo -n "BOOTH arbitrator daemon is "
+	if check_status; then
+		echo "Running"
+		return 0
+	else
+		echo "Stopped"
+		return 7
+	fi
+}
+
+start() {
+	[ -x $exec ] || exit 5
+	check_status
+  rc=$?
+	case "$rc" in
+	0)
+		echo "BOOTH arbitrator daemon is Running"
+		return 1
+		;;
+	1)
+		echo "BOOTH site daemon is Running"
+		return 1
+		;;
+	2)
+		echo -n $"Starting BOOTH arbitrator daemon: "		
+		startproc $exec $type
+		rc_status -v
+		;;
+	esac
+}
+
+stop() {
+	if check_status; then
+		echo -n $"Stopping BOOTH arbitrator daemon: "
+		killproc -p $lockfile $prog -TERM
+		rc_status -v
+	else
+		echo "BOOTH arbitrator daemon is not running."
+		return 1
+	fi
+}
+
+wait_for_stop() {
+	while [ -e $lockfile ]; do
+		sleep .5
+	done
+}
+
+restart() {
+	stop
+	wait_for_stop
+	start
+}
+
+case "$1" in
+	start|stop|restart)
+        $1
+        ;;
+	reload|force-reload)
+        restart
+        ;;
+	condrestart|try-restart)
+	[ ! -f "$lockfile" ] || restart
+        ;;
+  status)
+        status $prog
+        ;;
+  *)
+        echo $"Usage: $0 {start|stop|restart|try-restart|condrestart|reload|force-reload|status}"
+        exit 2
+esac

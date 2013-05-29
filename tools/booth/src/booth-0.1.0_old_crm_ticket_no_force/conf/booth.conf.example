@@ -1,0 +1,25 @@
+# The booth configuration file is "/etc/booth/booth.conf". You need to
+# prepare the same booth configuration file on each arbitrator and
+# each node in the cluster sites where the booth daemon can be launched.
+# Here is an example of the configuration file:
+
+# "transport" means which transport layer booth daemon will use.
+# Currently only "UDP" is supported.
+transport="UDP"
+
+# The port that booth daemons will use to talk to each other.
+port="6666"
+
+# The arbitrator IP. If you want to configure several arbitrators,
+# you need to configure each arbitrator with a separate line.
+arbitrator="147.2.207.14"
+
+# The site IP. The cluster site uses this IP to talk to other sites.
+# Like arbitrator, you need to configure each site with a separate line.
+site="147.4.215.19"
+site="147.18.2.1"
+
+# The ticket name, which corresponds to a set of resources which can be
+# fail-overed among different sites.
+ticket="ticketA"
+ticket="ticketB"

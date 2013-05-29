@@ -1,0 +1,119 @@
+#!/bin/bash
+#
+# BOOTH daemon init script for LSB-compliant Linux distributions.
+#
+# booth-arbitrator	BOOTH arbitrator daemon
+#
+# chkconfig: 2345 20 20
+# processname:  boothd
+# pidfile:      /var/run/booth.pid
+# description:  Cluster Ticket Registry
+### BEGIN INIT INFO
+# Provides: booth
+# Required-Start: $network $syslog
+# Required-Stop: $network $syslog
+# Should-Start:
+# Should-Stop:
+# Default-Start: 3 5
+# Default-Stop: 0 6
+# Short-Description: start and stop BOOTH arbitrator daemon
+### END INIT INFO
+
+prog="boothd"
+exec="/usr/sbin/$prog"
+type="arbitrator"       
+PIDFILE=/var/run/booth.pid
+
+. /etc/rc.d/init.d/functions
+
+internal_status() {
+	status -p "$PIDFILE" -l $prog $exec
+	return $?
+}
+
+check_status() {
+	internal_status
+	if [ "$?" -eq 0 ];then
+		pidnum=$(cat $PIDFILE)
+		if cat /proc/$pidnum/cmdline |grep $type > /dev/null 2>&1 ; then
+			return 0  #arbitrator daemon is Running
+		else
+			return 1  #site daemon is Running
+		fi
+	else
+		return 2 #BOOTH daemon is not running    
+	fi    
+}
+
+rhstatus() {
+	echo -n "BOOTH arbitrator daemon is "
+	if check_status; then
+		echo "Running"
+		return 0
+	else
+		echo "Stopped"
+		return 7
+	fi
+}
+
+start() {
+	[ -x $exec ] || exit 5
+	check_status
+  rc=$?
+	case "$rc" in
+	0)
+		echo "BOOTH arbitrator daemon is Running"
+		return 1
+		;;
+	1)
+		echo "BOOTH site daemon is Running"
+		return 1
+		;;
+	2)
+		echo -n $"Starting BOOTH arbitrator daemon: "		
+		daemon --pidfile="$PIDFILE" $exec $type -l $PIDFILE
+		RETVAL=$?
+        	echo
+        	[ $RETVAL -eq 0 ] && touch $PIDFILE
+        	return $RETVAL
+		;;
+	esac
+}
+
+stop() {
+	if check_status; then
+		echo -n $"Stopping BOOTH arbitrator daemon: "
+		killproc -p "$PIDFILE" $exec -TERM
+	        RETVAL=$?
+        	echo
+	        [ $RETVAL -eq 0 ] && rm -f $PIDFILE
+        	return $RETVAL
+	else
+		echo "BOOTH arbitrator daemon is not running."
+		return 1
+	fi
+}
+
+wait_for_stop() {
+	while [ -e $PIDFILE ]; do
+		sleep .5
+	done
+}
+
+restart() {
+	stop
+	wait_for_stop
+	start
+}
+
+case "$1" in
+	start|stop|restart)
+        $1
+        ;;
+  status)
+        rhstatus $prog
+        ;;
+  *)
+        echo $"Usage: $0 {start|stop|restart|status}"
+        exit 2
+esac
