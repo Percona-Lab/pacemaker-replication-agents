@@ -1,10 +1,24 @@
+===========
 Prm roadmap
+===========
 
+Author: Yves Trudeau, Percona
+
+State: first draft completed
+
+June 2013
+
+.. contents::
+
+---------------------------------------------------------
 1. Start/stop unclean, master score issue (done May 2013)
+---------------------------------------------------------
    
    Basically, if master fails, give a chance to restart 
     
+---------------------------------------------
 2. Change master score calculation for slaves
+---------------------------------------------
 
    Instead of looking for SBM, look at last published Xid of the master (attribute)
    and derive score from that. 
@@ -43,58 +57,72 @@ Prm roadmap
         - yes, if only mysqld crashed
         - no, if the host crashed.
    
-   
+---------------------------------------
 3. MHA like behavior, requires point 2.
+---------------------------------------
 
-   case 1: master mysqld master crash and can't restart
+case 1: master mysqld master crash and can't restart
+----------------------------------------------------
    
-        - restarted in place (see point 1.)
+- restarted in place (see point 1.)
+
+- if restart fails  master will get a stop event.  Upon 
+  unclean stop, tar last 2 files and open stream with nc (port?)
+  
+- The newly promoted master during pre-promote or promote grabs 
+  the last 2 master binlogs and process them, applying what's 
+  missing based on it's max applied Xid.  The new master then looks 
+  at its binlog/relaylog/downloaded files and create a map in a 
+  table prm.binlog_recovery_index (xid,file,pos) for the last 
+  transactions (1 min?)
+  
+- During post-promote, slaves looks at their last xid from binlog 
+  query the master for file and position based on their Xid.  With 
+  that, they start replication.
+          
+case 2:  Master server died
+---------------------------
    
-        - if restart fails  master will get a stop event.  Upon 
-          unclean stop, tar last 2 files and open stream with nc (port?)
+- slaves are doing monitor more frequently then token time * 3 so
+  they should have at least one monitor ops after master server 
+  failure.  master_score is accurate.
+  
+- Slave with highest Xid (master_score) is chosen, same algo as
+  above.
+  
+- The newly promoted master during pre-promote or promote grabs 
+  the last 2 master binlogs and process them, applying what's 
+  missing based on it's max applied Xid.  The new master then looks 
+  at its binlog/relaylog/downloaded files and create a map in a 
+  table prm.binlog_recovery_index (xid,file,pos) for the last 
+  transactions (1 min?)
+  
+- During post-promote, slaves looks at their last xid from binlog 
+  query the master for file and position based on their Xid.  With 
+  that, they start replication.
           
-        - The newly promoted master during pre-promote or promote grabs 
-          the last 2 master binlogs and process them, applying what's 
-          missing based on it's max applied Xid.  The new master then looks 
-          at its binlog/relaylog/downloaded files and create a map in a 
-          table prm.binlog_recovery_index (xid,file,pos) for the last 
-          transactions (1 min?)
-          
-        - During post-promote, slaves looks at their last xid from binlog 
-          query the master for file and position based on their Xid.  With 
-          that, they start replication.
-          
-   case 2:  Master server died 
-   
-        - slaves are doing monitor more frequently then token time * 3 so
-          they should have at least one monitor ops after master server 
-          failure.  master_score is accurate.
-          
-        - Slave with highest Xid (master_score) is chosen, same algo as
-          above.
-          
-        - The newly promoted master during pre-promote or promote grabs 
-          the last 2 master binlogs and process them, applying what's 
-          missing based on it's max applied Xid.  The new master then looks 
-          at its binlog/relaylog/downloaded files and create a map in a 
-          table prm.binlog_recovery_index (xid,file,pos) for the last 
-          transactions (1 min?)
-          
-        - During post-promote, slaves looks at their last xid from binlog 
-          query the master for file and position based on their Xid.  With 
-          that, they start replication.
-          
-          
+---------------
 4. Unit testing
+---------------
 
-    - likely a shell script with an option file running tests. 
-    - each test as a separate script sourcing the option file
-    - Called with common api (prepare, run, verify)
+- likely a shell script with an option file running tests. 
+- each test as a separate script sourcing the option file
+- Called with common api (prepare, run, verify)
     
-    
+----------------
 5. Documentation
+----------------
 
-    - Geo DR (doc + blog) (done)
-    - Maintenance mode (done)
-    - Schema change (done)
+- Geo DR (doc + blog) (done)
+- Maintenance mode (done)
+- Schema change (done)
+- MHA like documentation
+    
+-------------------
+6. 5.6 GTID support
+-------------------
 
+- Multi-threaded slave support?
+- gtid adjustments?
+- score calculation?
+- Separate agent?

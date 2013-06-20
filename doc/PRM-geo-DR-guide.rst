@@ -22,6 +22,7 @@ Site 1
 ======
 
 ::
+
    Network: 10.3.1.0/24
    pacemaker-1-1, database node, IP: 10.3.1.1
    pacemaker-1-2, database node, IP: 10.3.1.2
@@ -81,12 +82,14 @@ The packages will be compatible with the ``crm_ticket`` version in use. The stor
 
 If your install the old ``crm_ticket`` you can try from here::
 
+    git clone git@github.com:percona/percona-pacemaker-agents.git
+    
+and compile what's under tools/booth/src/booth-0.1.0_old_crm_ticket_no_force with "autogen.sh; ./configure; make; make install".  You'll find an init.d startup script for the arbitrator and a pacemaker resource agent in tools/booth/support-files.
 
+Booth Configuration
+===================
 
-Configuration
-=============
-
-The configuration file identifies all the booth nodes. On each each data center, only one node will run boothd at any given time so it must have its own virtual IP (can't be the writer-vip).  On all servers, the booth configuration must be the same.  Here's the configuration I was using::
+The configuration file identifies all the booth nodes. On each data center, only one node will run boothd at any given time so it must have its own virtual IP (can't be the writer-vip).  On all servers, the booth configuration must be the same.  Here's the configuration I was using::
 
    transport="UDP"
    port="6666"
@@ -99,25 +102,15 @@ You'll need to adjust the IP/VIP to what you have.  Between all of these IPs, co
 
    [root@localhost x86_64]# booth client list
    ticket: ticketMaster, owner: None, expires: INF
+   
+In this configuration, the ticket timeout is set to two minutes (120s), that means if a datacenter goes completely offline, it may take up to two minutes before a failover is initiated.  This timeout can be lowered but be warned that setting it too low may cause cluster instability.  For geo-DR, I doubt going under 30s makes sense.
 
 
--------
-Cleanup
--------
+-------------
+Pre-requisite
+-------------
 
-The current configuration of Pacemaker and Corosync have all the hosts on both sides, you need to do some cleanup.  Stop pacemaker and corosync on all nodes and then, do::
-
-   rm -f /var/lib/heartbeat/crm/*
-   rm -f /var/lib/corosync/*
-
-Edit the /etc/corosync.conf file on each database host and remove the references to the hosts in a remote datacenter.  The arbitrator node no longer runs corosync and pacemaker so this step can be skip for it.  For extra safety, in one of the datacenter, you can update the corosync authentication key with "corosync-keygen".  I recommend you install and start the "haveged" daemon (available in epel I think) before running the key generation tool::
-
-   yum install haveged
-   rm -f /etc/corosync/authkey
-   corosync-keygen
-   scp /etc/corosync/authkey otherNodeInSameDc:/etc/corosync
-
-Once done, restart corosync and pacemaker.  You should have an empty configuration and "crm status" should only list the hosts in the local datacenter in the "Online:" list.
+The following assumes you have two working PRM clusters in separate datacenters.  Those are regular setups, see the ``PRM-setup-guide`` for more information.
 
 ---
 ssh
@@ -134,17 +127,17 @@ and repeat for all hosts, adapting for site 2.  Currently the agent doesn't supp
    Host *
         ConnectTimeout=2
 
-
+This is extremely important, without a short connectTimeout, Pacemaker will likely timeout befor ssh and nothing will work. Normally even over a WAN, ssh can open a connection is about or less than 1s.  If it is not the case, look at the cypher configuration and reverse DNS, there might be a mismatch or a misconfiguration.  If you have to grow the timeout, do it like if you were losing a finger for every second you add.
 
 ---------
 New agent
 ---------
 
-You'll need a special version of the mysql agent to support the geo redundancy setup.  Eventually I merge with the normal one but it is not done yet.  To download it, use the following steps with user root::
+You need to make sure the mysql agent you have supports geo DR.  Best is to download from git like::
 
    cd /tmp
    rm -f mysql
-   wget https://github.com/y-trudeau/resource-agents-prm/raw/mysql_geo/heartbeat/mysql
+   wget https://github.com/percona/percona-pacemaker-agents/raw/master/agents/mysql_prm -O mysql
    chmod u+x mysql
    mv mysql /usr/lib/ocf/resource.d/percona/
    
@@ -152,15 +145,7 @@ You'll need a special version of the mysql agent to support the geo redundancy s
 Pacemaker configuration
 -----------------------
 
-Now it is time to start configuring Pacemaker.  The first thing we do, since each cluster now has only 2 hosts, is to set the no quorum policy to "ignore"::
-
-   crm_attribute --attr-name no-quorum-policy --attr-value ignore
-
-and then, we disable the stonith subsystem (may be good to eventually add it)::
-
-   crm_attribute --attr-name stonith-enabled --attr-value false
-
-Then, assuming all databases initial have the same dataset, we can begin building the configuration, starting by the booth configuration.  Using "crm configure edit" add the following configuration, adjusting the IP to correspond to each datacenter booth-vip::
+Assuming all databases initially have the same dataset and the two PRM cluster are up and running, we can begin building the configuration, starting by the booth configuration.  Using "crm configure edit" add the following configuration, adjusting the IP to correspond to each datacenter booth-vip::
 
    primitive booth ocf:pacemaker:booth-site \
          meta resource-stickiness="INFINITY" target-role="Started" \
@@ -168,38 +153,11 @@ Then, assuming all databases initial have the same dataset, we can begin buildin
    primitive booth-ip ocf:heartbeat:IPaddr2 \
          params ip="10.3.1.10" nic="eth0"
    group g-booth booth-ip booth
-
-The following step is to add the mysql resource, the master-slave clone set and the vips like usual.  Again, using the "crm configure edit" tool, add::
-
-   primitive p_mysql ocf:percona:mysql \
-         params config="/etc/mysql/my.cnf" pid="/var/lib/mysql/mysqld.pid" \
-         socket="/var/run/mysqld/mysqld.sock"replication_user="repl_user" \
-         replication_passwd="WhatAPassword" max_slave_lag="15" \
-         evict_outdated_slaves="false" binary="/usr/sbin/mysqld" test_user="test_user" \
-         test_passwd="test_pass" \
-         op monitor interval="5s" role="Master" timeout="30s" OCF_CHECK_LEVEL="1" \
-         op monitor interval="10s" role="Slave" timeout="30s" OCF_CHECK_LEVEL="1" \
-         op start interval="0" timeout="900s" \
-         op stop interval="0" timeout="900s"
-   primitive reader_vip1 ocf:heartbeat:IPaddr2 \
-         params ip="10.3.1.21" nic="eth0" cidr_netmask="24"
-   primitive reader_vip2 ocf:heartbeat:IPaddr2 \
-         params ip="10.3.1.22" nic="eth0" cidr_netmask="24"
-   primitive writer_vip ocf:heartbeat:IPaddr2 \
-         params ip="10.3.1.20" nic="eth0" cidr_netmask="24"
-   ms ms_MySQL p_mysql \
-         meta master-max="1" master-node-max="1" clone-max="2" clone-node-max="1" notify="true" \
-         globally-unique="false" target-role="Master" is-managed="true"
-   location No-reader-vip-1-loc reader_vip1 \
-         rule $id="No-reader-vip-1-rule" -inf: readable eq 0
-   location No-reader-vip-2-loc reader_vip2 \
-         rule $id="No-reader-vip-2-rule" -inf: readable eq 0
-   colocation reader_vip_1_dislike_reader_vip_2 -200: reader_vip1 reader_vip2
-   colocation writer_vip_on_master inf: writer_vip ms_MySQL:Master
-   order ms_MySQL_promote_before_vip inf: ms_MySQL:promote writer_vip:start
    order order-booth-ms_MySQL inf: g-booth ms_MySQL:promote
+   
+Here, it is assumed that the MySQL master-slave clonset is named ``ms_MySQL``.  If it is not the case, adjust accordingly.  Now, another tricky part, we must create an entry in pacemaker and a constraint for the "ticketMaster" token obtained from booth.  
 
-Noticed the the slave monitor operation interval has been increased to 10s, this is because an ssh may be done.  Now, the tricky part. We must create an entry in pacemaker and a constraint for the "ticketMaster" token from booth.  The "crm" tool doesn't support these options yet, so we must edit the xml.  The first step is to dump the current cib in xml format with the local pacemaker cluster in standby::
+The "crm" tool doesn't support these options yet, so we must edit the xml.  The first step is to dump the current cib in xml format with the local pacemaker cluster in standby::
 
    crm node standby pacemaker-1-1
    crm node standby pacemaker-1-2
@@ -223,6 +181,8 @@ Then load the file back::
    cibadmin --replace --xml-file /tmp/cib.xml
 
 And repeat for the other site.  The last step we need to do is enable the geo-redundant behavior of the agent by adding the parameters "geo_remote_IP" and "booth_master_ticket" to the MySQL primitive using "crm configure edit".  The "geo_remote_IP" is where ssh will connect to get the pacemaker info of the master side.  I strongly suggest you use the writer_vip of the remote site for that so the setting will be different on both sides.  The "booth_master_ticket" we have defined is ticketMaster and the same value needs to be used on both sides.  After these addition, the primitive line for the MySQL primitive will look like (for site 1)::
+
+Noticed the the slave monitor operation interval has been increased to 10s, this is because an ssh may be done. 
 
    primitive p_mysql ocf:percona:mysql \
          params config="/etc/mysql/my.cnf" pid="/var/lib/mysql/mysqld.pid" \
