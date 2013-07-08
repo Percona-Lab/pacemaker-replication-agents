@@ -1519,7 +1519,7 @@ mysql_run() {
         outputfile=`mktemp ${HA_RSCTMP}/mysql_run.${OCF_RESOURCE_INSTANCE}.XXXXXX`
         error=`"$@" 2>&1 1>$outputfile`
         rc=$?
-        if [ "suppress_56_password_warning" -eq 1 ]; then
+        if [ "$suppress_56_password_warning" -eq 1 ]; then
                 error=`echo "$error" | egrep -v '^Warning: Using a password on the command line'`
         fi
         output=`cat $outputfile`
