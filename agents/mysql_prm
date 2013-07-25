@@ -1147,8 +1147,9 @@ mysql_start() {
         # promoted a master before.
         
         if [ "$glb_master_exists" -ne 0 -a "$glb_cib_master" != $(get_local_ip) ]; then
-            ocf_log info "Changing MySQL configuration to replicate from $master_host."
             set_master
+            ocf_log info "Changing MySQL configuration to replicate from $master_host."
+            start_slave
             if [ $? -ne 0 ]; then
                 ocf_log err "Failed to start slave"
                 return $OCF_ERR_GENERIC
