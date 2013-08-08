@@ -553,6 +553,7 @@ get_slave_info() {
             master_log_pos=`parse_slave_info Read_Master_Log_Pos $tmpfile`
             slave_sql=`parse_slave_info Slave_SQL_Running $tmpfile`
             slave_io=`parse_slave_info Slave_IO_Running $tmpfile`
+            slave_io_state=`parse_slave_info Slave_IO_State $tmpfile`
             last_errno=`parse_slave_info Last_Errno $tmpfile`
             secs_behind=`parse_slave_info Seconds_Behind_Master $tmpfile`
             ocf_log debug "MySQL instance has a non empty slave status"
@@ -619,15 +620,43 @@ check_slave() {
                   # looks like, the sql thread is still running, no need
                   # to remove the vip, doing nothing
                   :
-               else				       
-				  set_reader_attr 0
-			   fi
+               else
+                   set_reader_attr 0
+               fi
 
                # try setting up the slave with the new master 
                set_master
                exit $OCF_SUCCESS
+           
+           elif [ "$slave_sql" == 'Yes' ]; then
+               # If the slq thread is running, it is an issue with the io thread
+               # let's try to restart it
+               
+               if [ "$slave_io_state" != "" ]; then
+                   # The io thread is running but is not connected, let's restart it.
+                   mysql_run -Q -sw $MYSQL $MYSQL_OPTIONS_REPL \
+                       -e "STOP SLAVE IO_THREAD"
+               fi
+               
+               # At this point, the io_thread should be stopped.
+               # let's try to start it again.
+               
+               mysql_run -Q -sw $MYSQL $MYSQL_OPTIONS_REPL \
+                   -e "START SLAVE IO_THREAD"
+               
+               # We give some time to connect
+               sleep 2
+               
+               get_slave_info
+               rc=$?
+               if [ $rc -eq 0 -a "$slave_io" == 'Yes']; then
+                   ocf_log info "MySQL Slave IO thread started succesfully."
+               else
+                   ocf_log warn "We could not start the MySQL Slave IO thread."
+               fi
             fi
-
+            
+            
         fi
 
         if [ "$slave_sql" != 'Yes' ]; then
