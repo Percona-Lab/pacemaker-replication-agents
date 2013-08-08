@@ -611,7 +611,7 @@ check_slave() {
 
             # Sanity check, are we at least on the right master
 
-            if [ "$master_host" != "$new_master" ]; then
+            if [ "$master_host" != "$glb_cib_master" ]; then
                # Not pointing to the right master
                
                # Is this a recent master failover on the remote side
