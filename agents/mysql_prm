@@ -171,6 +171,7 @@ The 'demote' operation makes this mysql server run as slave
 The 'validate-all' operation reports whether the parameters are valid
 
 UEND
+
 }
 
 meta_data() {
@@ -460,6 +461,7 @@ this is the name of the ticket used to identify the master side.
 </actions>
 </resource-agent>
 END
+
 }
 
 # Convenience functions
@@ -1617,6 +1619,11 @@ case "$1" in
         exit $OCF_SUCCESS;;
 esac
 
+if [ "$#" -lt "1" ]; then
+    usage
+    exit $OCF_SUCCESS
+fi
+
 mysql_validate
 rc=$?
 LSB_STATUS_STOPPED=3
@@ -1628,6 +1635,7 @@ if [ $rc -ne 0 ]; then
         *) exit $rc;;
     esac
 fi
+
 
 #Global info missing from OCF_RESKEY
 resources=`$CRM_RES --list`
