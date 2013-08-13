@@ -22,7 +22,7 @@
 # An example usage in /etc/ha.d/haresources:
 #       node1  10.0.0.170 mysql
 #
-# Version: 201305241715
+# Version: 201308101300
 #
 # See usage() function below for more details...
 #
@@ -1635,7 +1635,6 @@ if [ $rc -ne 0 ]; then
         *) exit $rc;;
     esac
 fi
-
 
 #Global info missing from OCF_RESKEY
 resources=`$CRM_RES --list`
