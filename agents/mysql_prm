@@ -1092,6 +1092,8 @@ mysql_monitor() {
     local rc
     local status_loglevel="err"
     local master_resource
+    
+    : ${OCF_RESKEY_CRM_meta_interval=0}
 
     # Set loglevel to info during probe
     if ocf_is_probe; then
@@ -1140,6 +1142,10 @@ mysql_monitor() {
 
     if ocf_is_ms && ! get_read_only; then
         ocf_log debug "MySQL monitor succeeded (master)";
+        if [ "$OCF_RESKEY_CRM_meta_interval" -eq "0" ]; then
+            # this is a probe and this server is a master so need to set master_score
+            $CRM_MASTER -v $((${OCF_RESKEY_max_slave_lag}+1000))
+        fi
         return $OCF_RUNNING_MASTER
     else
         ocf_log debug "MySQL monitor succeeded";
