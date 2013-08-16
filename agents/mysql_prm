@@ -1644,7 +1644,20 @@ fi
 
 #Global info missing from OCF_RESKEY
 resources=`$CRM_RES --list`
-glb_master_resource=`echo "$resources" | grep $INSTANCE_ATTR_NAME | awk '{print $3}' | head -n 1`
+
+# now we need the master-slave clone set name, need to walk around limitations
+# of older pacemaker
+if [[ "$OCF_RESKEY_crm_feature_set" > "3.0.1" ]]; then
+    glb_master_resource=`echo "$resources" | grep $INSTANCE_ATTR_NAME | awk '{print $3}' | head -n 1`
+else
+    # older versions don't write the primitive name in the resources list
+    for msr in `echo "$resources" | grep 'Master/Slave' | awk '{print $3}'`; do
+        isThere=`$CRM_RES -q -r $msr | grep primitive | grep -c $INSTANCE_ATTR_NAME`
+        if [ "$isThere" -gt "0" ]; then
+            glb_master_resource=$msr
+        fi
+    done
+fi
 is_master_side
 glb_master_side=$?
 if [ "${#OCF_RESKEY_geo_remote_IP}" -gt "0" -a $glb_master_side -ne 0 ]; then
