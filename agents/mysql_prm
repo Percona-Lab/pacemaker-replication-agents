@@ -1338,6 +1338,9 @@ mysql_stop() {
     if [ -n "$OCF_RESKEY_CRM_meta_timeout" ]; then
         shutdown_timeout=$((($OCF_RESKEY_CRM_meta_timeout/1000)-5))
     fi
+    
+    #Normally, pacemaker handles timeout but here we want to be able to do
+    #a SIGKILL (-9) before the timeout occurs.
     count=0
     while [ $count -lt $shutdown_timeout ]
     do
