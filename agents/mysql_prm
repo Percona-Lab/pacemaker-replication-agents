@@ -840,6 +840,11 @@ unset_master(){
     while true; do
         mysql_run -Q -sw -O $MYSQL $MYSQL_OPTIONS_REPL \
         -e 'SHOW PROCESSLIST\G' > $tmpfile
+        
+        if grep -i 'Master has sent all binlog to slave' $tmpfile >/dev/null; then
+            ocf_log info "MySQL slave has finished reading master binary log"
+            break
+        fi
         if grep -i 'Waiting for master to send event' $tmpfile >/dev/null; then
             ocf_log info "MySQL slave has finished reading master binary log"
             break
@@ -871,8 +876,10 @@ unset_master(){
     fi
 
     while true; do
-        mysql_run -Q -sw $MYSQL $MYSQL_OPTIONS_REPL \
+        mysql_run -Q -sw -O $MYSQL $MYSQL_OPTIONS_REPL \
             -e 'SHOW PROCESSLIST\G' > $tmpfile
+            
+        # Of course, slave messages changed over MySQL versions...
         if grep -i 'Has read all relay log' $tmpfile >/dev/null; then
             ocf_log info "MySQL slave has finished processing relay log"
             break
