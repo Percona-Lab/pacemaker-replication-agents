@@ -133,6 +133,7 @@ MYSQL_BINDIR=`dirname ${OCF_RESKEY_binary}`
 
 : ${OCF_RESKEY_geo_remote_IP}=""
 : ${OCF_RESKEY_booth_master_ticket}=${OCF_RESKEY_booth_master_ticket_default}
+: ${OCF_RESKEY_post_promote_script}=""
 
 #######################################################################
 # Convenience variables
@@ -442,6 +443,15 @@ this is the name of the ticket used to identify the master side.
 </longdesc>
 <shortdesc lang="en">Booth ticket name</shortdesc>
 <content type="string" default="${OCF_RESKEY_booth_master_ticket_default}" />
+</parameter>
+
+<parameter name="post_promote_script" unique="1" required="0">
+<longdesc lang="en">
+Allows to run custom code following a promotion.  An application of this is to
+prevent fail-back of the master role after an initial failover.
+</longdesc>
+<shortdesc lang="en">Post promote script</shortdesc>
+<content type="string" default="" />
 </parameter>
 
 </parameters>
@@ -1390,9 +1400,10 @@ mysql_promote() {
 
     # A master can accept reads
     set_reader_attr 1
-
-    # A master can accept reads
-    set_reader_attr 1
+    
+    if [ "${#OCF_RESKEY_post_promote_script}" -gt "0" -a -x "${OCF_RESKEY_post_promote_script}" -a ! -L "${OCF_RESKEY_post_promote_script}" ]; then
+        ${OCF_RESKEY_post_promote_script}
+    fi     
 
     return $OCF_SUCCESS
 }
