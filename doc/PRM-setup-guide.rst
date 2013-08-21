@@ -367,6 +367,9 @@ geo_remote_IP            Geo DR IP to access the remote cluster, see the PRM-Geo
 
 booth_master_ticket      Booth ticket name of the Geo DR master role, see the PRM-Geographic-DR-guide for more information
 
+post_promote_script      A script that is called at the end of the promote operation.  It can be used for some special
+                         use case like preventing failback.  See "Preventing failback" in the How to section.
+
 =======================  ========================================================================================================                      
 
 So here's a typical primitive declaration::
@@ -777,9 +780,24 @@ where ``p_mysql`` is the primitive name and ``:0`` the clone set instance that h
 Configuring a report slave with a dedicated VIP
 ===============================================
 
+Sometimes, people needs to configure a special slave that is used for report.  This slave needs to be less likely be be the master, more likely to have the report VIP and less likely to have the normal reader VIPs.  Assuming ``pacemaker-3`` is a report slave, here's how this can be implemented.  First, we need a rule to lower the score to become a master, the rule will look like::
 
+   location pacemaker-3_lesslikely_master ms_MySQL \
+        rule $id="pacemaker-3_lesslikely_master-rule" $role="master" -50: #uname eq pacemaker-3.dc1.beachbody.com
 
+Next, we need to favor the ``report-vip`` to be on ``pacemaker-3``.  The rule for this is::
 
+   location report-vip_prefers_ptbb-mys5 report-vip \
+        rule $id="rule-report-vip_prefers_pacemaker-3" 150: #uname eq pacemaker-3
+        
+Then of course, we need the existing regular reader VIPs to be less likely on ``pacemaker-3``::
+
+   location reader_vip_1_lesslikely_ reader_vip_1 \
+        rule $id="rule-reader_vip_1_lesslikely_pacemaker-3" -50: #uname eq pacemaker-3
+   location reader_vip_2_lesslikely_ reader_vip_2 \
+        rule $id="rule-reader_vip_2_lesslikely_pacemaker-3" -50: #uname eq pacemaker-3
+        
+        
 Enabling trace in the resource agent
 ====================================
 
@@ -800,12 +818,35 @@ If you plan to keep it there, add a logrotate config file like::
          missingok
          compress
       postrotate
-         # just if mysqld is really running
-         touch log
+         touch /tmp/mysql.ocf.ra.debug/log
       endscript
    }
 
 
+Preventing failback
+===================
+
+In some cases, for operational and backup concerns, it may be required to have a preferred master and allow failover to a slave but not a failback to the preferred master after a failure.  This can be achieve fairly easily with a post-promote script.  Assuming pacemaker-1 is the preferred master, pacemaker-2 the failover slave, create the following script only on pacemaker-2::
+
+    root@pacemaker-2 # chmod u+x /usr/local/bin/post-promote-pacemaker-2
+    root@pacemaker-2 # cat /usr/local/bin/post-promote-pacemaker-2
+    /usr/sbin/crm_attribute -N pacemaker-2 -n prm-no-failback -l forever -v 1
+
+then, create the prm-no-failback`` attribute in the cib with value 0::
+    
+    root@pacemaker-2 # /usr/sbin/crm_attribute -N pacemaker-2 -n prm-no-failback -l forever -v 0
+    root@pacemaker-2 # /usr/sbin/crm_attribute -N pacemaker-1 -n prm-no-failback -l forever -v 0 
+    
+and add the following location rule::
+
+    location loc-no-failback ms_MySQL \
+        rule $id="rule-no-failback" $role="master" -inf: prm-no-failback eq 1
+
+Every time the node pacemaker-2 is promote to master, it will set the attribute to 1, preventing pacemaker-1 to return to the master role.  To monitor the attribute value, use ``crm_mon -A1``.  To re-enable pacemaker-1 to the master role, you'll need to run::
+
+    /usr/sbin/crm_attribute -N pacemaker-1 -n prm-no-failback -l forever -v 0
+    
+    
 ---------------
 Advanced topics
 ---------------
