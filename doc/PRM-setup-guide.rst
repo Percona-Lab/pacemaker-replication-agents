@@ -832,7 +832,7 @@ In some cases, for operational and backup concerns, it may be required to have a
     root@pacemaker-2 # cat /usr/local/bin/post-promote-pacemaker-2
     /usr/sbin/crm_attribute -N pacemaker-2 -n prm-no-failback -l forever -v 1
 
-then, create the prm-no-failback`` attribute in the cib with value 0::
+then, create the prm-no-failback attribute in the cib with value 0::
     
     root@pacemaker-2 # /usr/sbin/crm_attribute -N pacemaker-2 -n prm-no-failback -l forever -v 0
     root@pacemaker-2 # /usr/sbin/crm_attribute -N pacemaker-1 -n prm-no-failback -l forever -v 0 
