@@ -21,6 +21,7 @@ Corosync handles the communication between the nodes.  It implements a cluster p
 
 Pacemaker can also use the heartbeat communication stack.  The setup using heartbeat is covered in the advanced topics.
 
+
 Pacemaker
 =========
 
@@ -37,6 +38,11 @@ Pacemaker is the heart of the solution, it the part managing where the logic is.
    - Notification: resource can be notified of a cluster wide change
 
 and many more.  The Pacemaker logic works with scores, the highest score wins.  
+
+Note on pcs for EL6
+-------------------
+
+On EL6, the crm utility has been replaced by the package maintener by the pcs utility.  While both utilities work, this document is all based on crm so I suggest you go to the Suse repo, https://build.opensuse.org/package/show/network:ha-clustering:Stable/crmsh  and install crmsh from there.
 
 mysql resource agent
 ====================
