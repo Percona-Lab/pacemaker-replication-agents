@@ -848,6 +848,16 @@ unset_master(){
     # At this point, the master is read only so there should not be much binlogs to transfer
     # Let's wait for the last bits
     while true; do
+        
+        get_slave_info
+        rc=$?
+        
+        # Is the slave_io thread running?
+        if [ "$slave_io" != 'No' ]; then
+            ocf_log info "Slave IO thread not running, master likely dead or stopped"
+            break;
+        fi
+    
         mysql_run -Q -sw -O $MYSQL $MYSQL_OPTIONS_REPL \
         -e 'SHOW PROCESSLIST\G' > $tmpfile
         
