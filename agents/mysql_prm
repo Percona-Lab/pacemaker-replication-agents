@@ -151,6 +151,7 @@ HOSTNAME=`uname -n`
 CRM_ATTR="${HA_SBIN_DIR}/crm_attribute -N $HOSTNAME "
 INSTANCE_ATTR_NAME=`echo ${OCF_RESOURCE_INSTANCE}| awk -F : '{print $1}'`
 CRM_ATTR_REPL_INFO="${HA_SBIN_DIR}/crm_attribute --type crm_config --name ${INSTANCE_ATTR_NAME}_REPL_INFO -s mysql_replication"
+CRM_ATTR_REPL_STATUS="${HA_SBIN_DIR}/crm_attribute --type crm_config --name ${INSTANCE_ATTR_NAME}_REPL_STATUS -s mysql_replication"
 CRM_RES="${HA_SBIN_DIR}/crm_resource"
 CRM_TICKET="${HA_SBIN_DIR}/crm_ticket"
 SSH="/usr/bin/ssh "
@@ -507,6 +508,17 @@ get_read_only() {
     fi
 }
 
+get_binlog_size() {
+    # Check if read-only is set
+    local binlog_size
+
+    binlog_size=`mysql_run -Q -sw -O $MYSQL -N $MYSQL_OPTIONS_REPL \
+        -e "SHOW VARIABLES like 'max_binlog_size'" | awk '{print $2}'`
+
+    echo $binlog_size
+
+}
+
 is_slave() {
     # Determine whether the machine is currently running as a MySQL
     # slave, as determined per SHOW SLAVE STATUS. Returns 1 if SHOW
@@ -848,6 +860,16 @@ unset_master(){
     # At this point, the master is read only so there should not be much binlogs to transfer
     # Let's wait for the last bits
     while true; do
+    
+        get_slave_info
+        rc=$?
+        
+        # Is the slave_io thread running?
+        if [ "$slave_io" != 'No' ]; then
+            ocf_log info "Slave IO thread not running, master likely dead or stopped"
+            break;
+        fi
+        
         mysql_run -Q -sw -O $MYSQL $MYSQL_OPTIONS_REPL \
         -e 'SHOW PROCESSLIST\G' > $tmpfile
         
@@ -1109,6 +1131,8 @@ mysql_monitor() {
     local rc
     local status_loglevel="err"
     local master_resource
+    local master_status_attr
+    local new_master_status_attr
     
     : ${OCF_RESKEY_CRM_meta_interval=0}
 
@@ -1139,6 +1163,14 @@ mysql_monitor() {
             rc=$?
             if [ $rc -eq 0 -o "$OCF_RESKEY_CRM_meta_role" = "Slave" ]; then
                 check_slave
+            else
+                update_data_master_status
+                master_status_attr=`$CRM_ATTR_REPL_STATUS --query  -q`
+                new_master_status_attr="$(get_master_status File)|$(get_binlog_size)"
+                rm -f $master_status_file
+                if [ "$master_status_attr" != "$new_master_status_attr" ]; then
+                    $CRM_ATTR_REPL_STATUS -v "$new_master_status_attr"
+                fi
             fi
         fi
 
@@ -1389,7 +1421,7 @@ mysql_promote() {
     update_data_master_status
     master_info="$(get_local_ip)|$(get_master_status File)|$(get_master_status Position)"
     ${CRM_ATTR_REPL_INFO} -v "$master_info"
-    rm -f $tmpfile
+    rm -f $master_status_file
 
     set_read_only off || return $OCF_ERR_GENERIC
 
@@ -1435,7 +1467,11 @@ mysql_notify() {
 
     case "$type_op" in
         'pre-promote')
-            # Nothing to do now here, new replication info not yet published
+            # Master-score is normally calculated from slave-lag but it is better to use
+            # binlog offset position to pick the most up to date slave
+            
+            # Was there a master before?
+            
 
         ;;
         'post-promote')
