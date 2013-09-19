@@ -22,7 +22,7 @@
 # An example usage in /etc/ha.d/haresources:
 #       node1  10.0.0.170 mysql
 #
-# Version: 201308101300
+# Version: 201309191740
 #
 # See usage() function below for more details...
 #
@@ -155,6 +155,7 @@ CRM_ATTR_REPL_STATUS="${HA_SBIN_DIR}/crm_attribute --type crm_config --name ${IN
 CRM_RES="${HA_SBIN_DIR}/crm_resource"
 CRM_TICKET="${HA_SBIN_DIR}/crm_ticket"
 SSH="/usr/bin/ssh "
+MAX_BINLOG_SIZE_CACHE="${HA_RSCTMP}/max_binlog_size_cache"
 
 #######################################################################
 
@@ -554,6 +555,22 @@ is_slave() {
 parse_slave_info() {
     # Extracts field $1 from result of "SHOW SLAVE STATUS\G" from file $2
     sed -ne "s/^.* $1: \(.*\)$/\1/p" < $2
+}
+
+# get the current max_binlog_size.  Since this value rarely change, we cache
+# it for 1h
+get_max_binlog_size() {    
+    if [ -e $MAX_BINLOG_SIZE_CACHE ]; then
+        cat $MAX_BINLOG_SIZE_CACHE
+        if [ `date +%s` -gt "$((`stat -c %Z $MAX_BINLOG_SIZE_CACHE`+3600))" ]; then
+            rm $MAX_BINLOG_SIZE_CACHE
+        fi
+    else
+        mysql_run -Q -sw -O $MYSQL $MYSQL_OPTIONS_REPL \
+            -e "Show global variables like 'max_binlog_size';" | \
+            awk '{ print $2 }' > $MAX_BINLOG_SIZE_CACHE
+        cat $MAX_BINLOG_SIZE_CACHE
+    fi
 }
 
 get_slave_info() {
@@ -1166,7 +1183,7 @@ mysql_monitor() {
             else
                 update_data_master_status
                 master_status_attr=`$CRM_ATTR_REPL_STATUS --query  -q`
-                new_master_status_attr="$(get_master_status File)|$(get_binlog_size)"
+                new_master_status_attr="$(get_master_status File)|$(get_master_status Position)|$(get_max_binlog_size)"
                 rm -f $master_status_file
                 if [ "$master_status_attr" != "$new_master_status_attr" ]; then
                     $CRM_ATTR_REPL_STATUS -v "$new_master_status_attr"
@@ -1467,8 +1484,18 @@ mysql_notify() {
 
     case "$type_op" in
         'pre-promote')
+        
             # Master-score is normally calculated from slave-lag but it is better to use
             # binlog offset position to pick the most up to date slave
+            master_status_attr=`$CRM_ATTR_REPL_STATUS --query  -q`
+            last_reported_master_file=`echo $master_status_attr | cut -d'|' -f1`
+            last_reported_master_pos=`echo $master_status_attr | cut -d'|' -f2`
+            master_max_binlog_size=`echo $master_status_attr | cut -d'|' -f3`
+                
+            get_slave_info
+            rc=$?
+
+
             
             # Was there a master before?
             
@@ -1707,7 +1734,7 @@ resources=`$CRM_RES --list`
 if [[ "$OCF_RESKEY_crm_feature_set" > "3.0.1" ]]; then
     glb_master_resource=`echo "$resources" | grep $INSTANCE_ATTR_NAME | awk '{print $3}' | head -n 1`
 else
-    # older versions don't write the primitive name in the resources list
+    # older versions of Pacemaker don't write the primitive name in the resources list
     for msr in `echo "$resources" | grep 'Master/Slave' | awk '{print $3}'`; do
         isThere=`$CRM_RES -q -r $msr | grep primitive | grep -c $INSTANCE_ATTR_NAME`
         if [ "$isThere" -gt "0" ]; then
