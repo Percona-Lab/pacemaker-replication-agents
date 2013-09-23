@@ -22,7 +22,7 @@
 # An example usage in /etc/ha.d/haresources:
 #       node1  10.0.0.170 mysql
 #
-# Version: 201309191740
+# Version: 201309231520
 #
 # See usage() function below for more details...
 #
@@ -601,8 +601,6 @@ get_slave_info() {
         else
             # Instance produced an empty "SHOW SLAVE STATUS" output --
             # instance is not a slave
-            
-
             
             ocf_log err "check_slave invoked on an instance that is not a replication slave."
 	        rm -f $tmpfile
@@ -1488,17 +1486,59 @@ mysql_notify() {
             # Master-score is normally calculated from slave-lag but it is better to use
             # binlog offset position to pick the most up to date slave
             master_status_attr=`$CRM_ATTR_REPL_STATUS --query  -q`
-            last_reported_master_file=`echo $master_status_attr | cut -d'|' -f1`
-            last_reported_master_pos=`echo $master_status_attr | cut -d'|' -f2`
-            master_max_binlog_size=`echo $master_status_attr | cut -d'|' -f3`
-                
-            get_slave_info
-            rc=$?
-
-
             
-            # Was there a master before?
+            if [ $? -eq 0 ]; then
+                # There's a master status entry although we don't know if it is 
+                # a valid one
+				last_reported_master_file=`echo $master_status_attr | cut -d'|' -f1`
+				last_reported_master_pos=`echo $master_status_attr | cut -d'|' -f2`
+				master_max_binlog_size=`echo $master_status_attr | cut -d'|' -f3`
             
+				get_slave_info
+				if [ $? -eq 0 ]; then
+					# We'll be here only if the master crashed. In the event of 
+					# a graceful demote, a post-demote notification event would have occurred.
+					# The post-demote include an unset-master that 
+					# resets the slave after the completion of the IO and SQL
+					# threads.  The post-demote doesn't run if the master host
+					# crashed.
+				
+					# Let's establish the master score based on the following
+					# rule.
+					# score = ((file number diff)*master_max_binlog_size
+					#          + fileposdiff/10
+					#
+					# All events are at least 10 bytes so dividing by 10 doesn't reduce
+					# the resolution and increases the span.
+					#
+					# Since the master publishes its status only once per few
+					# seconds, the fileposdiff is likely positive.
+					# We'll cap all values to int signed range et target
+					# 1B as the value if a slave is fully in sync with the master
+					last_reported_master_file_number=`echo $last_reported_master_file | cut -d'.' -f2`
+					master_log_file_number=`echo $master_log_file | cut -d'.' -f2`
+					
+					master_score=$(((1000000000+\
+					     ($master_log_file_number-$last_reported_master_file_number)*$master_max_binlog_size+\
+					     $master_log_pos-$last_reported_master_pos)/10))
+					
+					# now, the caps, the upper cap is unlikely
+					if [ $master_score -gt 2147483647 ]; then
+						master_score=2147483647
+					fi
+					
+					# the lower cap could happened if a slave lags behind by
+					# more then 30GB of binlog. In that case... do we really care
+					# if we floor the value
+					
+					if [ $master_score -lt -2147483647 ]; then
+						master_score=-2147483647
+					fi
+					
+					$CRM_MASTER -v $master_score 
+
+				fi
+			fi
 
         ;;
         'post-promote')
