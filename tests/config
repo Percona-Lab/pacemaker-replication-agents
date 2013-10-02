@@ -1,0 +1,18 @@
+# This configuration file contains variables and is sourced by the 
+# test scripts.
+
+# Server list, resolvable hostnames or IPs, space separated.  Those hostnames/IPs
+# will also be used for communication between the nodes for corosync and for 
+# MySQL replication
+TEST_HOSTS="10.3.2.10 10.3.2.11 10.3.2.12"
+
+# ssh key to access by root the testing servers
+SSHKEY=/home/yves/id_rsa
+
+# MySQL root password
+MYSQL_ROOT_PASS=rootpass
+
+# return values
+PRM_SUCCESS=0  # success
+PRM_FAIL=1 # Normal failure
+PRM_OTHER=2 # unexpected failure
