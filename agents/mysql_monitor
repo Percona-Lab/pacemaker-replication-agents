@@ -1,0 +1,600 @@
+#!/bin/bash
+#
+#
+#	MySQL_Monitor agent, set writeable and readable attributes based on the 
+#   state of the local MySQL, running and read_only or not.  The agent basis is
+#   the original "Dummy" agent written by Lars Marowsky-Brée and part of the
+#   Pacemaker distribution.  Many functions are from mysql_prm.
+#
+#
+# Copyright (c) 2013, Percona inc., Yves Trudeau, Michael Coburn
+#
+# This program is free software; you can redistribute it and/or modify
+# it under the terms of version 2 of the GNU General Public License as
+# published by the Free Software Foundation.
+#
+# This program is distributed in the hope that it would be useful, but
+# WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+#
+# Further, this software is distributed without any warranty that it is
+# free of the rightful claim of any third person regarding infringement
+# or the like.  Any license provided herein, whether implied or
+# otherwise, applies only to this software file.  Patent licenses, if
+# any, provided herein do not apply to combinations of this program with
+# other software, or any other product whatsoever.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program; if not, write the Free Software Foundation,
+# Inc., 59 Temple Place - Suite 330, Boston MA 02111-1307, USA.
+#
+#######################################################################
+# Initialization:
+
+: ${OCF_FUNCTIONS_DIR=${OCF_ROOT}/lib/heartbeat}
+. ${OCF_FUNCTIONS_DIR}/ocf-shellfuncs
+
+#######################################################################
+
+HOSTOS=`uname`
+if [ "X${HOSTOS}" = "XOpenBSD" ];then
+OCF_RESKEY_client_binary_default="/usr/local/bin/mysql"
+OCF_RESKEY_pid_default="/var/mysql/mysqld.pid"
+OCF_RESKEY_socket_default="/var/run/mysql/mysql.sock"
+else
+OCF_RESKEY_client_binary_default="/usr/bin/mysql"
+OCF_RESKEY_pid_default="/var/run/mysql/mysqld.pid"
+OCF_RESKEY_socket_default="/var/lib/mysql/mysql.sock"
+fi
+OCF_RESKEY_reader_attribute_default="readable"
+OCF_RESKEY_writer_attribute_default="writable"
+OCF_RESKEY_reader_failcount_default="1"
+OCF_RESKEY_user_default="root"
+OCF_RESKEY_password_default=""
+OCF_RESKEY_max_slave_lag_default="3600"
+OCF_RESKEY_cluster_type_default="replication"
+
+: ${OCF_RESKEY_client_binary=${OCF_RESKEY_client_binary_default}}
+: ${OCF_RESKEY_pid=${OCF_RESKEY_pid_default}}
+: ${OCF_RESKEY_socket=${OCF_RESKEY_socket_default}}
+: ${OCF_RESKEY_reader_attribute=${OCF_RESKEY_reader_attribute_default}}
+: ${OCF_RESKEY_reader_failcount=${OCF_RESKEY_reader_failcount_default}}
+: ${OCF_RESKEY_writer_attribute=${OCF_RESKEY_writer_attribute_default}}
+: ${OCF_RESKEY_user=${OCF_RESKEY_user_default}}
+: ${OCF_RESKEY_password=${OCF_RESKEY_password_default}}
+: ${OCF_RESKEY_max_slave_lag=${OCF_RESKEY_max_slave_lag_default}}
+: ${OCF_RESKEY_cluster_type=${OCF_RESKEY_cluster_type_default}}
+
+MYSQL="$OCF_RESKEY_client_binary -A -S $OCF_RESKEY_socket --connect_timeout=10 --user=$OCF_RESKEY_user --password=$OCF_RESKEY_passwd "
+HOSTNAME=`uname -n`
+CRM_ATTR="${HA_SBIN_DIR}/crm_attribute -N $HOSTNAME "
+
+meta_data() {
+	cat <<END
+<?xml version="1.0"?>
+<!DOCTYPE resource-agent SYSTEM "ra-api-1.dtd">
+<resource-agent name="mysql_monitor" version="0.9">
+<version>1.0</version>
+
+<longdesc lang="en">
+This agent monitors the local MySQL instance and set the writable and readable
+attributes according to what it finds.  It checks if MySQL is running and if
+it is read-only or not.
+</longdesc>
+<shortdesc lang="en">Agent monitoring mysql</shortdesc>
+
+<parameters>
+<parameter name="state" unique="1">
+<longdesc lang="en">
+Location to store the resource state in.
+</longdesc>
+<shortdesc lang="en">State file</shortdesc>
+<content type="string" default="${HA_RSCTMP}/Dummy-${OCF_RESOURCE_INSTANCE}.state" />
+</parameter>
+
+<parameter name="user" unique="0">
+<longdesc lang="en">
+MySQL user to connect to the local MySQL instance to check the slave status and 
+if the read_only variable is set.  It requires the replication client priviledge.
+</longdesc>
+<shortdesc lang="en">MySQL user</shortdesc>
+<content type="string" default="${OCF_RESKEY_user_default}" />
+</parameter>
+
+<parameter name="password" unique="0">
+<longdesc lang="en">
+Password of the mysql user to connect to the local MySQL instance
+</longdesc>
+<shortdesc lang="en">MySQL password</shortdesc>
+<content type="string" default="${OCF_RESKEY_password_default}" />
+</parameter>
+
+<parameter name="socket" unique="0">
+<longdesc lang="en">
+Unix socket to use in order to connect to MySQL on the host
+</longdesc>
+<shortdesc lang="en">MySQL socket</shortdesc>
+<content type="string" default="${OCF_RESKEY_socket_default}" />
+</parameter>
+
+<parameter name="pid" unique="0">
+<longdesc lang="en">
+MySQL pid file, used to verify MySQL is running.
+</longdesc>
+<shortdesc lang="en">MySQL pid file</shortdesc>
+<content type="string" default="${OCF_RESKEY_pid_default}" />
+</parameter>
+
+<parameter name="reader_attribute" unique="0">
+<longdesc lang="en">
+The reader attribute in the cib that can be used by location rules to allow or not
+reader VIPs on a host.
+</longdesc>
+<shortdesc lang="en">Reader attribute</shortdesc>
+<content type="string" default="${OCF_RESKEY_reader_attribute_default}" />
+</parameter>
+
+<parameter name="writer_attribute" unique="0">
+<longdesc lang="en">
+The reader attribute in the cib that can be used by location rules to allow or not
+reader VIPs on a host.
+</longdesc>
+<shortdesc lang="en">Writer attribute</shortdesc>
+<content type="string" default="${OCF_RESKEY_writer_attribute_default}" />
+</parameter>
+
+<parameter name="max_slave_lag" unique="0" required="0">
+<longdesc lang="en">
+The maximum number of seconds a replication slave is allowed to lag
+behind its master in order to have a reader VIP on it.
+</longdesc>
+<shortdesc lang="en">Maximum time (seconds) a MySQL slave is allowed
+to lag behind a master</shortdesc>
+<content type="integer" default="${OCF_RESKEY_max_slave_lag_default}"/>
+</parameter>
+
+<parameter name="cluster_type" unique="0" required="0">
+<longdesc lang="en">
+Type of cluster, three possible values: pxc, replication, read-only.  "pxc" is 
+for Percona XtraDB cluster, it uses the clustercheck script and set the 
+reader_attribute and writer_attribute according to the return code.  
+"replication" checks the read-only state and the slave status, only writable 
+node(s) will get the writer_attribute (and the reader_attribute) and on the 
+read-only nodes, replication status will be checked and the reader_attribute set 
+according to the state.  "read-only" will just check if the read-only variable, 
+if read/write, it will get both the writer_attribute and reader_attribute set, if
+read-only it will get only the reader_attribute.
+</longdesc>
+<shortdesc lang="en">Type of cluster</shortdesc>
+<content type="string" default="${OCF_RESKEY_cluster_type_default}"/>
+</parameter>
+
+</parameters>
+
+<actions>
+<action name="start"        timeout="20" />
+<action name="stop"         timeout="20" />
+<action name="monitor"      timeout="20" interval="10" depth="0" />
+<action name="reload"       timeout="20" />
+<action name="migrate_to"   timeout="20" />
+<action name="migrate_from" timeout="20" />
+<action name="meta-data"    timeout="5" />
+<action name="validate-all"   timeout="20" />
+</actions>
+</resource-agent>
+END
+}
+
+#######################################################################
+# Non API functions
+
+# Extract fields from slave status
+parse_slave_info() {
+    # Extracts field $1 from result of "SHOW SLAVE STATUS\G" from file $2
+    sed -ne "s/^.* $1: \(.*\)$/\1/p" < $2
+}
+
+# Read the slave status and 
+get_slave_info() {
+
+    local mysql_options tmpfile
+            
+    if [ "$master_log_file" -a "$master_host" ]; then
+        # variables are already defined, get_slave_info has been run before
+        return $OCF_SUCCESS
+    else
+        tmpfile=`mktemp ${HA_RSCTMP}/check_slave.${OCF_RESOURCE_INSTANCE}.XXXXXX`
+
+        mysql_run -Q -sw -O $MYSQL $MYSQL_OPTIONS_REPL \
+        -e 'SHOW SLAVE STATUS\G' > $tmpfile
+
+        if [ -s $tmpfile ]; then
+            master_host=`parse_slave_info Master_Host $tmpfile`
+            slave_sql=`parse_slave_info Slave_SQL_Running $tmpfile`
+            slave_io=`parse_slave_info Slave_IO_Running $tmpfile`
+            slave_io_state=`parse_slave_info Slave_IO_State $tmpfile`
+            last_errno=`parse_slave_info Last_Errno $tmpfile`
+            secs_behind=`parse_slave_info Seconds_Behind_Master $tmpfile`
+            ocf_log debug "MySQL instance has a non empty slave status"
+        else
+            # Instance produced an empty "SHOW SLAVE STATUS" output --
+            # instance is not a slave
+            
+            ocf_log err "check_slave invoked on an instance that is not a replication slave."
+	        rm -f $tmpfile
+            return $OCF_ERR_GENERIC
+        fi
+        rm -f $tmpfile
+        return $OCF_SUCCESS
+    fi
+}
+
+get_read_only() {
+    # Check if read-only is set
+    local read_only_state
+
+    read_only_state=`mysql_run -Q -sw -O $MYSQL -N $MYSQL_OPTIONS_REPL \
+        -e "SHOW VARIABLES like 'read_only'" | awk '{print $2}'`
+
+    if [ "$read_only_state" = "ON" ]; then
+        return 0
+    else
+        return 1
+    fi
+}
+
+# get the attribute controlling the readers VIP
+get_reader_attr() {
+    local attr_value
+    local rc
+
+    attr_value=`$CRM_ATTR -l reboot --name ${OCF_RESKEY_reader_attribute} --query -q`
+    rc=$?
+    if [ "$rc" -eq "0" ]; then
+        echo $attr_value
+    else
+        echo -1
+    fi
+
+}
+
+# Set the attribute controlling the readers VIP
+set_reader_attr() {
+    local curr_attr_value
+
+    curr_attr_value=$(get_reader_attr)
+    
+    if [ "$1" -eq "0" ]; then
+        if [ "$curr_attr_value" -gt "0" ]; then
+            curr_attr_value=$((${curr_attr_value}-1))    
+            $CRM_ATTR -l reboot --name ${OCF_RESKEY_reader_attribute} -v $curr_attr_value
+        else
+            $CRM_ATTR -l reboot --name ${OCF_RESKEY_reader_attribute} -v 0
+        fi
+    else
+        if [ "$curr_attr_value" -ne "$OCF_RESKEY_reader_failcount" ]; then
+            $CRM_ATTR -l reboot --name ${OCF_RESKEY_reader_attribute} -v $OCF_RESKEY_reader_failcount
+        fi
+    fi
+
+}
+
+# get the attribute controlling the writer VIP
+get_writer_attr() {
+    local attr_value
+    local rc
+
+    attr_value=`$CRM_ATTR -l reboot --name ${OCF_RESKEY_writer_attribute} --query -q`
+    rc=$?
+    if [ "$rc" -eq "0" ]; then
+        echo $attr_value
+    else
+        echo -1
+    fi
+
+}
+
+# Set the attribute controlling the writer VIP
+set_writer_attr() {
+    local curr_attr_value
+
+    curr_attr_value=$(get_writer_attr)
+    
+    if [ "$1" -eq "0" ]; then
+        $CRM_ATTR -l reboot --name ${OCF_RESKEY_writer_attribute} -v 0
+    else
+        $CRM_ATTR -l reboot --name ${OCF_RESKEY_writer_attribute} -v 1
+    fi
+
+}
+
+#
+# mysql_run: Run a mysql command, log its output and return the proper error code.
+# Usage:   mysql_run [-Q] [-info|-warn|-err] [-O] [-sw] <command>
+#       -Q: don't log the output of the command if it succeeds
+#       -info|-warn|-err: log the output of the command at given
+#               severity if it fails (defaults to err)
+#       -O: echo the output of the command
+#       -sw: Suppress 5.6 client warning when password is used on the command line
+# Adapted from ocf_run.
+#
+mysql_run() {
+        local rc
+        local output outputfile
+        local verbose=1
+        local returnoutput
+        local loglevel=err
+        local suppress_56_password_warning
+        local var
+
+        for var in 1 2 3 4
+        do
+            case "$1" in
+                "-Q")
+                    verbose=""
+                    shift 1;;
+                "-info"|"-warn"|"-err")
+                    loglevel=`echo $1 | sed -e s/-//g`
+                    shift 1;;
+                "-O")
+                    returnoutput=1
+                    shift 1;;
+                "-sw")
+                    suppress_56_password_warning=1
+                    shift 1;;
+
+                *)
+                    ;;
+            esac
+        done
+
+        outputfile=`mktemp ${HA_RSCTMP}/mysql_run.${OCF_RESOURCE_INSTANCE}.XXXXXX`
+        error=`"$@" 2>&1 1>$outputfile`
+        rc=$?
+        if [ "$suppress_56_password_warning" -eq 1 ]; then
+                error=`echo "$error" | egrep -v '^Warning: Using a password on the command line'`
+        fi
+        output=`cat $outputfile`
+        rm -f $outputfile
+
+        if [ $rc -eq 0 ]; then
+            if [ "$verbose" -a ! -z "$output" ]; then
+                ocf_log info "$output"
+            fi
+
+            if [ "$returnoutput" -a ! -z "$output" ]; then
+                echo "$output"
+            fi
+
+            MYSQL_LAST_ERR=$OCF_SUCCESS
+            return $OCF_SUCCESS
+        else
+            if [ ! -z "$error" ]; then                 
+                ocf_log $loglevel "$error"
+                regex='^ERROR ([[:digit:]]{4}).*'
+                if [[ $error =~ $regex ]]; then
+                    mysql_code=${BASH_REMATCH[1]}
+                    if [ -n "$mysql_code" ]; then
+                        MYSQL_LAST_ERR=$mysql_code
+                        return $rc
+                    fi
+                fi
+            else
+                ocf_log $loglevel "command failed: $*"
+            fi
+            # No output to parse so return the standard exit code.
+            MYSQL_LAST_ERR=$rc
+            return $rc
+        fi
+}
+
+
+
+
+#######################################################################
+# API functions
+
+mysql_monitor_usage() {
+	cat <<END
+usage: $0 {start|stop|monitor|migrate_to|migrate_from|validate-all|meta-data}
+
+Expects to have a fully populated OCF RA-compliant environment set.
+END
+}
+
+mysql_monitor_start() {
+    
+    # Initialise the attribute in the cib if they are not already there.
+    if [ $(get_reader_attr) -eq -1 ]; then
+        set_reader_attr 0
+    fi
+    
+    if [ $(get_writer_attr) -eq -1 ]; then
+        set_writer_attr 0
+    fi
+    
+    mysql_monitor_monitor
+    if [ $? =  $OCF_SUCCESS ]; then
+	return $OCF_SUCCESS
+    fi
+    touch ${OCF_RESKEY_state}
+}
+
+mysql_monitor_stop() {
+    
+    mysql_monitor_monitor
+    if [ $? =  $OCF_SUCCESS ]; then
+	rm ${OCF_RESKEY_state}
+    fi
+    return $OCF_SUCCESS
+}
+
+mysql_monitor_monitor() {
+	# Monitor _MUST!_ differentiate correctly between running
+	# (SUCCESS), failed (ERROR) or _cleanly_ stopped (NOT RUNNING).
+	# That is THREE states, not just yes/no.
+	
+    if [  -e $OCF_RESKEY_pid ]; then
+        pid=`cat $OCF_RESKEY_pid`;
+        if [ -d /proc -a -d /proc/1 ]; then
+            [ "u$pid" != "u" -a -d /proc/$pid ]
+        else
+            kill -s 0 $pid >/dev/null 2>&1
+        fi
+
+        if [ $? -eq 0 ]; then
+
+            case ${OCF_RESKEY_cluster_type} in
+            
+            replication)
+            REPLICATION)
+            
+                if get_read_only; then
+                    # a slave?
+                    
+                    set_writer_attr 0
+                    
+                    get_slave_info
+                    rc=$?
+
+                    if [ $rc -eq 0 ]; then
+                       # show slave status is not empty
+                       # Is there a master_log_file defined?  (master_log_file is deleted 
+                       # by reset slave
+                       if [ "$master_log_file" ]; then
+                          # is read_only but no slave config...
+                          
+                          set_reader_attr 0
+                          
+                       else
+                          # has a slave config
+                          
+                          if [ "$slave_sql" = 'Yes' -a "$slave_io" = 'Yes' ]; then
+                              # $secs_behind can be NULL so must be tested only
+                              # if replication is OK
+                              if [ $secs_behind -gt $OCF_RESKEY_max_slave_lag ]; then
+                                  set_reader_attr 0
+                              else
+                                  set_reader_attr 1
+                              fi
+                          else
+                              set_reader_attr 0
+                          fi
+                       fi
+                    else
+                       # "SHOW SLAVE STATUS" returns an empty set if instance is not a
+                       # replication slave
+                       
+                       set_reader_attr 0
+                       
+                    fi
+                else
+                    # host is RW
+                    set_reader_attr 1
+                    set_writer_attr 1
+                fi
+                ;;
+                
+            pxc)
+            PXC)
+                pxcstat=`/usr/bin/clustercheck`
+                if [ $? -eq 0]; then
+                    set_reader_attr 1
+                    set_writer_attr 1
+                else
+                    set_reader_attr 0
+                    set_writer_attr 0
+                fi
+                
+                ;;
+                
+            read-only)
+            READ-ONLY)
+                if get_read_only; then
+                    set_reader_attr 1
+                    set_writer_attr 0                    
+                else
+                    set_reader_attr 1
+                    set_writer_attr 1
+                fi
+                ;;
+                
+            esac
+        fi
+    else
+        ocf_log $1 "MySQL is not running"
+        set_reader_attr 0
+        set_writer_attr 0
+    fi
+    
+	if [ -f ${OCF_RESKEY_state} ]; then
+	    return $OCF_SUCCESS
+	fi
+	if false ; then
+		return $OCF_ERR_GENERIC
+	fi
+	return $OCF_NOT_RUNNING
+}
+
+mysql_monitor_validate() {
+    
+    # Is the state directory writable? 
+    state_dir=`dirname "$OCF_RESKEY_state"`
+    touch "$state_dir/$$"
+    if [ $? != 0 ]; then
+	return $OCF_ERR_ARGS
+    fi
+    rm "$state_dir/$$"
+
+    return $OCF_SUCCESS
+}
+
+##########################################################################
+# If DEBUG_LOG is set, make this resource agent easy to debug: set up the
+# debug log and direct all output to it.  Otherwise, redirect to /dev/null.
+# The log directory must be a directory owned by root, with permissions 0700,
+# and the log must be writable and not a symlink.
+##########################################################################
+DEBUG_LOG="/tmp/mysql_monitor.ocf.ra.debug/log"
+if [ "${DEBUG_LOG}" -a -w "${DEBUG_LOG}" -a ! -L "${DEBUG_LOG}" ]; then
+    DEBUG_LOG_DIR="${DEBUG_LOG%/*}"
+    if [ -d "${DEBUG_LOG_DIR}" ]; then
+        exec 9>>"$DEBUG_LOG"
+        exec 2>&9
+        date >&9
+        echo "$*" >&9
+        env | grep OCF_ | sort >&9
+        set -x
+    else
+        exec 9>/dev/null
+    fi
+fi
+
+
+case $__OCF_ACTION in
+meta-data)	meta_data
+		exit $OCF_SUCCESS
+		;;
+start)		mysql_monitor_start;;
+stop)		mysql_monitor_stop;;
+monitor)	mysql_monitor_monitor;;
+migrate_to)	ocf_log info "Migrating ${OCF_RESOURCE_INSTANCE} to ${OCF_RESKEY_CRM_meta_migrate_target}."
+	        mysql_monitor_stop
+		;;
+migrate_from)	ocf_log info "Migrating ${OCF_RESOURCE_INSTANCE} from ${OCF_RESKEY_CRM_meta_migrate_source}."
+	        mysql_monitor_start
+		;;
+reload)		ocf_log info "Reloading ${OCF_RESOURCE_INSTANCE} ..."
+		;;
+validate-all)	mysql_monitor_validate;;
+usage|help)	mysql_monitor_usage
+		exit $OCF_SUCCESS
+		;;
+*)		mysql_monitor_usage
+		exit $OCF_ERR_UNIMPLEMENTED
+		;;
+esac
+rc=$?
+ocf_log debug "${OCF_RESOURCE_INSTANCE} $__OCF_ACTION : $rc"
+exit $rc
+
