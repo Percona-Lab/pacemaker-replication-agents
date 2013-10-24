@@ -260,7 +260,7 @@ which will not do.  Since it is very recent, we can just download the latest age
    [root@host-01 corosync]# cd /usr/lib/ocf/resource.d/
    [root@host-01 resource.d]# mkdir percona
    [root@host-01 resource.d]# cd percona/
-   [root@host-01 percona]# wget -q https://github.com/y-trudeau/resource-agents-prm/raw/master/heartbeat/mysql
+   [root@host-01 percona]# wget -O mysql -q https://github.com/percona/percona-pacemaker-agents/raw/master/agents/mysql_prm
    [root@host-01 percona]# chmod u+x mysql
 
 The procedure must be repeated on all hosts.  We have created a "percona" directory to make sure there would be no conflict with the default MySQL resource agent if the resource-agents package is updated.
@@ -865,7 +865,7 @@ With many cloud provider, it is not possible to have virtual IPs so in that case
    [root@app-01 corosync]# cd /usr/lib/ocf/resource.d/
    [root@app-01 resource.d]# mkdir percona
    [root@app-01 resource.d]# cd percona/
-   [root@app-01 percona]# wget -q -O mysql https://github.com/jayjanssen/Percona-Pacemaker-Resource-Agents/raw/master/fake_mysql_novip
+   [root@app-01 percona]# wget -q -O mysql https://github.com/percona/percona-pacemaker-agents/raw/master/agents/fake_mysql_novip
    [root@app-01 percona]# chmod u+x mysql
 
 By default the IP and port used are::
