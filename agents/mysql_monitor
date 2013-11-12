@@ -28,6 +28,8 @@
 # along with this program; if not, write the Free Software Foundation,
 # Inc., 59 Temple Place - Suite 330, Boston MA 02111-1307, USA.
 #
+# Version: 20131112104335
+#
 #######################################################################
 # Initialization:
 
@@ -65,7 +67,7 @@ OCF_RESKEY_cluster_type_default="replication"
 : ${OCF_RESKEY_max_slave_lag=${OCF_RESKEY_max_slave_lag_default}}
 : ${OCF_RESKEY_cluster_type=${OCF_RESKEY_cluster_type_default}}
 
-MYSQL="$OCF_RESKEY_client_binary -A -S $OCF_RESKEY_socket --connect_timeout=10 --user=$OCF_RESKEY_user --password=$OCF_RESKEY_passwd "
+MYSQL="$OCF_RESKEY_client_binary -A -S $OCF_RESKEY_socket --connect_timeout=10 --user=$OCF_RESKEY_user --password=$OCF_RESKEY_password "
 HOSTNAME=`uname -n`
 CRM_ATTR="${HA_SBIN_DIR}/crm_attribute -N $HOSTNAME "
 
@@ -413,6 +415,7 @@ mysql_monitor_start() {
         set_writer_attr 0
     fi
     
+    mysql_monitor
     mysql_monitor_monitor
     if [ $? =  $OCF_SUCCESS ]; then
 	return $OCF_SUCCESS
@@ -422,18 +425,19 @@ mysql_monitor_start() {
 
 mysql_monitor_stop() {
     
+    set_reader_attr 0
+    set_writer_attr 0
+    
     mysql_monitor_monitor
     if [ $? =  $OCF_SUCCESS ]; then
 	rm ${OCF_RESKEY_state}
     fi
     return $OCF_SUCCESS
+
 }
 
-mysql_monitor_monitor() {
-	# Monitor _MUST!_ differentiate correctly between running
-	# (SUCCESS), failed (ERROR) or _cleanly_ stopped (NOT RUNNING).
-	# That is THREE states, not just yes/no.
-	
+# Monitor MySQL, not the agent itself
+mysql_monitor() {
     if [  -e $OCF_RESKEY_pid ]; then
         pid=`cat $OCF_RESKEY_pid`;
         if [ -d /proc -a -d /proc/1 ]; then
@@ -445,10 +449,7 @@ mysql_monitor_monitor() {
         if [ $? -eq 0 ]; then
 
             case ${OCF_RESKEY_cluster_type} in
-            
-            replication)
-            REPLICATION)
-            
+            'replication'|'REPLICATION')
                 if get_read_only; then
                     # a slave?
                     
@@ -495,8 +496,7 @@ mysql_monitor_monitor() {
                 fi
                 ;;
                 
-            pxc)
-            PXC)
+            'pxc'|'PXC')
                 pxcstat=`/usr/bin/clustercheck`
                 if [ $? -eq 0]; then
                     set_reader_attr 1
@@ -508,8 +508,7 @@ mysql_monitor_monitor() {
                 
                 ;;
                 
-            read-only)
-            READ-ONLY)
+            'read-only'|'READ-ONLY')
                 if get_read_only; then
                     set_reader_attr 1
                     set_writer_attr 0                    
@@ -526,6 +525,12 @@ mysql_monitor_monitor() {
         set_reader_attr 0
         set_writer_attr 0
     fi
+}
+    
+mysql_monitor_monitor() {
+	# Monitor _MUST!_ differentiate correctly between running
+	# (SUCCESS), failed (ERROR) or _cleanly_ stopped (NOT RUNNING).
+	# That is THREE states, not just yes/no.
     
 	if [ -f ${OCF_RESKEY_state} ]; then
 	    return $OCF_SUCCESS
@@ -577,7 +582,9 @@ meta-data)	meta_data
 		;;
 start)		mysql_monitor_start;;
 stop)		mysql_monitor_stop;;
-monitor)	mysql_monitor_monitor;;
+monitor)	mysql_monitor
+            mysql_monitor_monitor;;
+            mysql_monitor_monitor;;
 migrate_to)	ocf_log info "Migrating ${OCF_RESOURCE_INSTANCE} to ${OCF_RESKEY_CRM_meta_migrate_target}."
 	        mysql_monitor_stop
 		;;
