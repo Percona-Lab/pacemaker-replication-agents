@@ -28,8 +28,24 @@
 # along with this program; if not, write the Free Software Foundation,
 # Inc., 59 Temple Place - Suite 330, Boston MA 02111-1307, USA.
 #
-# Version: 20131112104335
+# Version: 20131119163921
 #
+# See usage() function below for more details...
+#
+# OCF instance parameters:
+#
+#  OCF_RESKEY_state
+#  OCF_RESKEY_user
+#  OCF_RESKEY_password
+#  OCF_RESKEY_client_binary
+#  OCF_RESKEY_pid
+#  OCF_RESKEY_socket
+#  OCF_RESKEY_reader_attribute
+#  OCF_RESKEY_reader_failcount
+#  OCF_RESKEY_writer_attribute
+#  OCF_RESKEY_max_slave_lag
+#  OCF_RESKEY_cluster_type
+#  
 #######################################################################
 # Initialization:
 
@@ -56,6 +72,7 @@ OCF_RESKEY_password_default=""
 OCF_RESKEY_max_slave_lag_default="3600"
 OCF_RESKEY_cluster_type_default="replication"
 
+: ${OCF_RESKEY_state=${HA_RSCTMP}/mysql-monitor-${OCF_RESOURCE_INSTANCE}.state}
 : ${OCF_RESKEY_client_binary=${OCF_RESKEY_client_binary_default}}
 : ${OCF_RESKEY_pid=${OCF_RESKEY_pid_default}}
 : ${OCF_RESKEY_socket=${OCF_RESKEY_socket_default}}
@@ -91,7 +108,7 @@ it is read-only or not.
 Location to store the resource state in.
 </longdesc>
 <shortdesc lang="en">State file</shortdesc>
-<content type="string" default="${HA_RSCTMP}/Dummy-${OCF_RESOURCE_INSTANCE}.state" />
+<content type="string" default="${HA_RSCTMP}/Mysql-monitor-${OCF_RESOURCE_INSTANCE}.state" />
 </parameter>
 
 <parameter name="user" unique="0">
@@ -302,12 +319,13 @@ set_writer_attr() {
 
     curr_attr_value=$(get_writer_attr)
     
-    if [ "$1" -eq "0" ]; then
-        $CRM_ATTR -l reboot --name ${OCF_RESKEY_writer_attribute} -v 0
-    else
-        $CRM_ATTR -l reboot --name ${OCF_RESKEY_writer_attribute} -v 1
+    if [ "$1" -ne "$curr_attr_value" ]; then
+        if [ "$1" -eq "0" ]; then
+            $CRM_ATTR -l reboot --name ${OCF_RESKEY_writer_attribute} -v 0
+        else
+            $CRM_ATTR -l reboot --name ${OCF_RESKEY_writer_attribute} -v 1
+        fi
     fi
-
 }
 
 #
@@ -497,8 +515,8 @@ mysql_monitor() {
                 ;;
                 
             'pxc'|'PXC')
-                pxcstat=`/usr/bin/clustercheck`
-                if [ $? -eq 0]; then
+                pxcstat=`/usr/bin/clustercheck $OCF_RESKEY_user $OCF_RESKEY_password `
+                if [ $? -eq 0 ]; then
                     set_reader_attr 1
                     set_writer_attr 1
                 else
@@ -583,7 +601,6 @@ meta-data)	meta_data
 start)		mysql_monitor_start;;
 stop)		mysql_monitor_stop;;
 monitor)	mysql_monitor
-            mysql_monitor_monitor;;
             mysql_monitor_monitor;;
 migrate_to)	ocf_log info "Migrating ${OCF_RESOURCE_INSTANCE} to ${OCF_RESKEY_CRM_meta_migrate_target}."
 	        mysql_monitor_stop
