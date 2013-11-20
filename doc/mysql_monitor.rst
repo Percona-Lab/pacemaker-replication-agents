@@ -160,3 +160,30 @@ Like with PRM, VIPs can be defined and managed by the attributes.  Here's an exa
         rule $id="No-writer-vip-rule" -inf: writable eq 0
     colocation col_vip_dislike_each_other -200: reader_vip_1 reader_vip_2 writer_vip
     
+
+---------
+Debugging
+---------
+
+The best way to debug if something goes wrong is to trace the agent execution.  The trace can be 
+enable with:
+
+    root@pacemaker-1:~# mkdir -p /tmp/mysql_monitor.ocf.ra.debug
+    root@pacemaker-1:~# touch /tmp/mysql_monitor.ocf.ra.debug/log
+    root@pacemaker-1:~# more /tmp/mysql_monitor.ocf.ra.debug/log
+    Wed Nov 20 10:30:03 EST 2013
+    monitor
+    OCF_RA_VERSION_MAJOR=1
+    OCF_RA_VERSION_MINOR=0
+    OCF_RESKEY_CRM_meta_OCF_CHECK_LEVEL=1
+    OCF_RESKEY_CRM_meta_clone=0
+    OCF_RESKEY_CRM_meta_clone_max=3
+    OCF_RESKEY_CRM_meta_clone_node_max=1
+    OCF_RESKEY_CRM_meta_globally_unique=false
+    OCF_RESKEY_CRM_meta_interval=1000
+    OCF_RESKEY_CRM_meta_name=monitor
+    OCF_RESKEY_CRM_meta_notify=false
+    OCF_RESKEY_CRM_meta_timeout=30000
+    ....
+
+when done, just move or delete the log file.
