@@ -166,7 +166,7 @@ Debugging
 ---------
 
 The best way to debug if something goes wrong is to trace the agent execution.  The trace can be 
-enable with:
+enable with::
 
     root@pacemaker-1:~# mkdir -p /tmp/mysql_monitor.ocf.ra.debug
     root@pacemaker-1:~# touch /tmp/mysql_monitor.ocf.ra.debug/log
