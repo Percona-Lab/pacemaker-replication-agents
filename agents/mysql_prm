@@ -22,7 +22,7 @@
 # An example usage in /etc/ha.d/haresources:
 #       node1  10.0.0.170 mysql
 #
-# Version: 201308101300
+# Version: 20131129150215
 #
 # See usage() function below for more details...
 #
@@ -1150,7 +1150,14 @@ mysql_monitor() {
             if [ $rc -eq 0 -o "$OCF_RESKEY_CRM_meta_role" = "Slave" ]; then
                 check_slave
             fi
+        else
+            is_slave
+            rc=$?
+            if [ $rc -eq 0 -o "$OCF_RESKEY_CRM_meta_role" = "Slave" ]; then
+                unset_master
+            fi            
         fi
+        
 
         # Check for test table
         mysql_run -Q -sw $MYSQL $MYSQL_OPTIONS_TEST \
