@@ -37,7 +37,7 @@ Site 2
 
    Network: 10.3.2.0/24
    pacemaker-2-1, database node, IP: 10.3.2.1
-   pacemaker-2-2, database node, IP: 10.3.1.2
+   pacemaker-2-2, database node, IP: 10.3.2.2
    booth-vip, 10.3.2.10
    writer-vip, 10.3.2.20
    reader-vips, 10.3.2.21, 10.3.2.22
@@ -89,7 +89,7 @@ and compile what's under tools/booth/src/booth-0.1.0_old_crm_ticket_no_force wit
 Booth Configuration
 ===================
 
-The configuration file identifies all the booth nodes. On each data center, only one node will run boothd at any given time so it must have its own virtual IP (can't be the writer-vip).  On all servers, the booth configuration must be the same.  Here's the configuration I was using::
+The configuration file identifies all the booth nodes. On each data center, only one node will run boothd at any given time so it must have its own virtual IP (can't be the writer-vip).  On all servers, the booth configuration (/etc/booth/booth.conf) must be the same.  Here's the configuration I was using::
 
    transport="UDP"
    port="6666"
