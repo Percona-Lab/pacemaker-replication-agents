@@ -1,18 +1,26 @@
 # This configuration file contains variables and is sourced by the 
 # test scripts.
 
-# Server list, resolvable hostnames or IPs, space separated.  Those hostnames/IPs
-# will also be used for communication between the nodes for corosync and for 
-# MySQL replication
-TEST_HOSTS="10.3.2.10 10.3.2.11 10.3.2.12"
+# ssh commands to connect to the nodes
+SSH1="ssh -p 22222 root@10.2.2.100"
+SSH2="ssh -p 22223 root@10.2.2.100"
+SSH3="ssh -p 22224 root@10.2.2.100"
 
-# ssh key to access by root the testing servers
-SSHKEY=/home/yves/id_rsa
+# MySQL command to connect locally
+MYSQL='mysql -B '
 
-# MySQL root password
-MYSQL_ROOT_PASS=rootpass
+# crm related info
+READER_ATTRIBUTE=readable
+WRITER_ATTRIBUTE=writable
+MYSQL_CRM_PRIMITIVE=p_mysql
+MYSQL_CRM_MS=ms_MySQL
+declare -A READER_VIP_PRIMITIVES=([reader_vip_1]=0 [reader_vip_2]=0)
+WRITER_VIP_PRIMITIVE="writer_vip"
 
 # return values
 PRM_SUCCESS=0  # success
 PRM_FAIL=1 # Normal failure
 PRM_OTHER=2 # unexpected failure
+
+declare -A uname_ssh  #populated by build_assoc_uname_ssh
+declare -A repl_state #populated by check_slaves
