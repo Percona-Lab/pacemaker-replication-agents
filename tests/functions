@@ -4,9 +4,9 @@
 
 runcmd_all() {
 
-    runcmd $SSH1 $@
-    runcmd $SSH2 $@
-    runcmd $SSH3 $@
+    runcmd $SSH1 $@  1> /dev/null
+    runcmd $SSH2 $@  1> /dev/null
+    runcmd $SSH3 $@  1> /dev/null
 }
 
 runcmd() {
@@ -15,7 +15,7 @@ runcmd() {
     rc=$?
     if [ $rc -ne 0 ]; then
         echo "$@ failed with retrun code $rc"
-        exit $PRM_FAIL
+        return $PRM_FAIL
     else
         return $PRM_SUCCESS
     fi
@@ -44,7 +44,8 @@ print_result() {
             echo "Unexpected result";;
         *)
             ;;
-    esac    
+    esac 
+    exit $2   
 }
 
 parse_slave_info() {
@@ -61,6 +62,10 @@ get_master_IP() {
    else
       echo $IP
    fi
+}
+
+get_max_slave_lag() {
+    cat base_config.crm | grep max_slave_lag | sed 's/^.* max_slave_lag=\"\([0-9]*\)\" .*/\1/'
 }
 
 standby_all() {
@@ -120,7 +125,21 @@ check_slaves() {
     local slave_master
     local slave_io
     local slave_sql
+    local sbm
     local target_master
+    local verbose=0
+    
+    for var in 1 
+    do
+        case "$1" in
+            "-v")
+                verbose=1
+                shift 1;;
+
+            *)
+                ;;
+        esac
+    done
     
     target_master=`get_master_IP $1`
     
@@ -150,15 +169,23 @@ check_slaves() {
             slave_master=`parse_slave_info Master_Host $tmpfile`
             slave_sql=`parse_slave_info Slave_SQL_Running $tmpfile`
             slave_io=`parse_slave_info Slave_IO_Running $tmpfile`
+            sbm=`parse_slave_info Seconds_Behind_Master $tmpfile`
             rm -f $tmpfile
             
-            if [ "$slave_sql" == 'Yes' -a "$slave_io" == 'Yes' -a "$slave_master" == "$target_master" ]; then
+            # trap when slave is stopped that sbm is string "NULL"
+            if [ "$sbm" = "NULL" ]; then
+                sbm=99999999
+            fi
+            
+            if [ "$slave_sql" == 'Yes' -a "$slave_io" == 'Yes' -a "$slave_master" == "$target_master" -a "$sbm" -lt $(get_max_slave_lag) ]; then
                 # all ok
                 repl_state[$slave]=1
             else
                 all_good=0
                 repl_state[$slave]=0
-                echo "$slave replication is broken"
+                if [ "$verbose" -eq 1 ]; then
+                    echo "$slave replication is broken"
+                fi
             fi
         done
         
@@ -171,7 +198,9 @@ check_slaves() {
             return $PRM_FAIL
         fi
     else
-        echo "No slaves"
+        if [ "$verbose" -eq 1 ]; then
+            echo "No slaves"
+        fi
         return $PRM_FAIL
     fi
 
@@ -184,7 +213,6 @@ check_VIPs() {
     local dummy
     local writerok
     local readersok  
-    declare -A host_rvip
     local uniq_per_host
     local verbose
 
@@ -207,7 +235,7 @@ check_VIPs() {
 
     #writer vip on master
     tmpfile=`mktemp /tmp/prm_test.XXXXXX`
-    cmd="${uname_ssh[$slave]} crm_mon -1"
+    cmd="$SSH1 crm_mon -1"
     runcmd $cmd > $tmpfile
 
     writerok=`cat $tmpfile | grep $WRITER_VIP_PRIMITIVE | grep -c $1`
@@ -224,7 +252,7 @@ check_VIPs() {
     for h in ${host_rvip[*]}; do
         if [ "$uniq_per_host" -eq 1 ]; then
             # each vip should be on a distinct host
-            cnt=`echo ${host_rvip[*]} | grep -c $h`
+            cnt=`echo ${host_rvip[*]} | grep -o $h | grep -c $h`
             if [ "$cnt" -gt 1 ]; then
                 echo "host $h has more than one reader vip"
                 readersok=0

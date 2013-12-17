@@ -24,3 +24,4 @@ PRM_OTHER=2 # unexpected failure
 
 declare -A uname_ssh  #populated by build_assoc_uname_ssh
 declare -A repl_state #populated by check_slaves
+declare -A host_rvip  #populated by check_VIPs

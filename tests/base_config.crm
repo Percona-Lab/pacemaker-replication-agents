@@ -29,7 +29,7 @@ location No-reader-vip-2-loc reader_vip_2 \
 colocation reader_vip_1_dislike_reader_vip_2 -200: reader_vip_1 reader_vip_2 writer_vip
 colocation reader_vip_1_dislike_writer_vip -200: reader_vip_1 writer_vip
 colocation reader_vip_2_dislike_writer_vip -200: reader_vip_2 writer_vip
-colocation writer_vip_on_master inf: writer_vip ms_MySQL:Master
+colocation writer_vip_on_master inf: writer_vip ms_MySQL:Master 
 order ms_MySQL_promote_before_vip inf: ms_MySQL:promote writer_vip:start
 property $id="cib-bootstrap-options" \
         stonith-enabled="false" \
