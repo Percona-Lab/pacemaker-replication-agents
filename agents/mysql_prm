@@ -22,7 +22,7 @@
 # An example usage in /etc/ha.d/haresources:
 #       node1  10.0.0.170 mysql
 #
-# Version: 201309231520
+# Version: 20140103152125
 #
 # See usage() function below for more details...
 #
@@ -566,7 +566,7 @@ get_max_binlog_size() {
             rm $MAX_BINLOG_SIZE_CACHE
         fi
     else
-        mysql_run -Q -sw -O $MYSQL $MYSQL_OPTIONS_REPL \
+        mysql_run -Q -sw -O $MYSQL -N $MYSQL_OPTIONS_REPL \
             -e "Show global variables like 'max_binlog_size';" | \
             awk '{ print $2 }' > $MAX_BINLOG_SIZE_CACHE
         cat $MAX_BINLOG_SIZE_CACHE
