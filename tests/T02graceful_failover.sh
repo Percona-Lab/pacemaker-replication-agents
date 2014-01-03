@@ -30,12 +30,14 @@ runtest() {
     master2=`check_master`
     rc=$?    
     if [ "$rc" -ne "$PRM_SUCCESS" -o "$master1" = "$master2" ]; then
+        echo "check_master failed or same master"
         print_result "$0" $PRM_FAIL
     fi
 
     check_slaves $master2
     rc=$?    
     if [ "$rc" -ne "$PRM_SUCCESS" ]; then
+        echo "check_slaves failed"
         print_result "$0" $PRM_FAIL
     fi
 
