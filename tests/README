@@ -1,0 +1,35 @@
+=====
+Setup
+=====
+
+In order to run the PRM tests you need 3 working servers.  All the 
+configuration details must be set in the "config" file and the servers
+must met the following requirements::
+
+    - Be accesssible on distinct IPs from the test host
+    - The test host is not one of the 3 hosts
+    - MySQL is configured with identical dataset, like after mysql_install_db
+    - root ssh is possible from the test host using a key, same key for all
+      3 hosts.
+    - MySQL root user can be accessed from the test hosts, all privileges 
+      with grant option
+    - PRM is configured, Pacemaker and Corosync are stopped, they don't start
+      automatically after boot. 
+
+  
+Each test is made of a script that has 3 phases::
+
+    - setup
+    - test
+    - cleanup
+
+The initial state is corosync and pacemaker stopped. The setup phase brings 
+the cluster ready for the test, the test phase is the actual test and
+cleanup returns the  cluster to the initial state.
+
+
+=================
+Running the tests
+=================
+
+Tests can be individually or with the all_tests script.

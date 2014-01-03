@@ -1,0 +1,283 @@
+# functions to be used by the tests
+
+. config
+
+runcmd_all() {
+
+    runcmd $SSH1 $@  1> /dev/null
+    runcmd $SSH2 $@  1> /dev/null
+    runcmd $SSH3 $@  1> /dev/null
+}
+
+runcmd() {
+
+    $@
+    rc=$?
+    if [ $rc -ne 0 ]; then
+        echo "$@ failed with retrun code $rc"
+        return $PRM_FAIL
+    else
+        return $PRM_SUCCESS
+    fi
+}
+
+build_assoc_uname_ssh() {
+    local uname
+    
+    uname=`runcmd $SSH1 uname -n`
+    uname_ssh[$uname]=$SSH1
+    uname=`runcmd $SSH2 uname -n`
+    uname_ssh[$uname]=$SSH2
+    uname=`runcmd $SSH3 uname -n`
+    uname_ssh[$uname]=$SSH3
+    
+}
+
+print_result() {
+    echo -n "$1: "
+    case "$2" in
+        "$PRM_SUCCESS")
+            echo "Success";;
+        "$PRM_FAIL")
+            echo "Fail";;
+        "$PRM_OTHER")
+            echo "Unexpected result";;
+        *)
+            ;;
+    esac 
+    exit $2   
+}
+
+parse_slave_info() {
+    # Extracts field $1 from result of "SHOW SLAVE STATUS\G" from file $2
+    sed -ne "s/^.* $1: \(.*\)$/\1/p" < $2
+}
+
+get_master_IP() {
+   local IP
+   # can't use runcmd, we need to trap the return value
+   IP=`${uname_ssh[$1]} crm_attribute -l forever -n ${MYSQL_CRM_PRIMITIVE}_mysql_master_IP -q -G`
+   if [ ! $? -eq 0 ]; then
+      $1
+   else
+      echo $IP
+   fi
+}
+
+get_max_slave_lag() {
+    cat base_config.crm | grep max_slave_lag | sed 's/^.* max_slave_lag=\"\([0-9]*\)\" .*/\1/'
+}
+
+standby_all() {
+    runcmd_all 'crm node standby `uname -n`'
+}
+
+online_all() {
+    runcmd_all 'crm node online `uname -n`'
+}
+
+crm_master() {
+    runcmd $SSH1 "crm_mon -1 | grep 'Masters:' | sed 's/\s*Masters:\s\[\s\(.*\)\s\]/\1/'"
+}
+
+crm_slaves() {
+    runcmd $SSH1 "crm_mon -1 | grep 'Slaves:' | sed 's/\s*Slaves:\s\[\s\(.*\)\s\]/\1/'"
+}
+
+crm_nodes() {
+    runcmd $SSH1 "crm_mon -1 | grep 'Online:' | sed 's/\s*Online:\s\[\s\(.*\)\s\]/\1/'"
+}
+
+check_master() {
+    declare -a nodes=( `crm_nodes` )
+    master=`crm_master`
+    
+    if [ "${#master}" -gt "0" ]; then
+        #Sanity check
+        matchnode=0
+        for node in "${nodes[@]}"; do
+            if [ "$node" = "$master" ]; then
+                matchnode=1
+                break
+            fi
+        done
+    
+        if [ "$matchnode" -eq "1" ]; then
+            echo "$master"
+            return $PRM_SUCCESS
+        else
+            echo "A master has been promoted but node is invalid"
+            return $PRM_FAIL
+        fi
+    else
+        echo "No master has been promoted"
+        return $PRM_FAIL
+    fi
+
+}
+
+# build_assoc_uname_ssh must be called before
+check_slaves() {
+    declare -a nodes=( `crm_nodes` )
+    declare -a slaves=( `crm_slaves` )
+    local matchnode
+    local all_good
+    local slave_master
+    local slave_io
+    local slave_sql
+    local sbm
+    local target_master
+    local verbose=0
+    
+    for var in 1 
+    do
+        case "$1" in
+            "-v")
+                verbose=1
+                shift 1;;
+
+            *)
+                ;;
+        esac
+    done
+    
+    target_master=`get_master_IP $1`
+    
+    if [ "${#slaves}" -gt "0" ]; then
+        #Sanity check
+        all_good=1
+        for slave in "${slaves[@]}"; do
+            matchnode=0
+            for node in "${nodes[@]}"; do
+                if [ "$slave" = "$node" ]; then
+                    matchnode=1
+                    break
+                fi
+            done
+    
+            if [ "$matchnode" -eq "1" ]; then
+                :
+                #echo "Valid slave $slave"
+            else
+                echo "A master has been promoted but node is invalid"
+                return $PRM_FAIL
+            fi
+            
+            tmpfile=`mktemp /tmp/prm_test.XXXXXX`
+            cmd="${uname_ssh[$slave]} $MYSQL -E -e ' show slave status '"
+            runcmd $cmd > $tmpfile
+            slave_master=`parse_slave_info Master_Host $tmpfile`
+            slave_sql=`parse_slave_info Slave_SQL_Running $tmpfile`
+            slave_io=`parse_slave_info Slave_IO_Running $tmpfile`
+            sbm=`parse_slave_info Seconds_Behind_Master $tmpfile`
+            rm -f $tmpfile
+            
+            # trap when slave is stopped that sbm is string "NULL"
+            if [ "$sbm" = "NULL" ]; then
+                sbm=99999999
+            fi
+            
+            if [ "$slave_sql" == 'Yes' -a "$slave_io" == 'Yes' -a "$slave_master" == "$target_master" -a "$sbm" -lt $(get_max_slave_lag) ]; then
+                # all ok
+                repl_state[$slave]=1
+            else
+                all_good=0
+                repl_state[$slave]=0
+                if [ "$verbose" -eq 1 ]; then
+                    echo "$slave replication is broken"
+                fi
+            fi
+        done
+        
+        #adding the master to repl_state
+        repl_state[$1]=1
+        
+        if [ "$all_good" -eq 1 ]; then
+            return $PRM_SUCCESS
+        else
+            return $PRM_FAIL
+        fi
+    else
+        if [ "$verbose" -eq 1 ]; then
+            echo "No slaves"
+        fi
+        return $PRM_FAIL
+    fi
+
+}
+
+# build_assoc_uname_ssh and check_slaves must be called before
+# -u check if the vips are on separte hosts
+check_VIPs() {
+    local cnt
+    local dummy
+    local writerok
+    local readersok  
+    local uniq_per_host
+    local verbose
+
+    uniq_per_host=0
+    verbose=0
+    for var in 1 
+    do
+        case "$1" in
+            "-u")
+                uniq_per_host=1
+                shift 1;;
+            "-v")
+                verbose=1
+                shift 1;;
+
+            *)
+                ;;
+        esac
+    done
+
+    #writer vip on master
+    tmpfile=`mktemp /tmp/prm_test.XXXXXX`
+    cmd="$SSH1 crm_mon -1"
+    runcmd $cmd > $tmpfile
+
+    writerok=`cat $tmpfile | grep $WRITER_VIP_PRIMITIVE | grep -c $1`
+
+    for rvip in ${!READER_VIP_PRIMITIVES[@]}; do
+        host_rvip[$rvip]=`cat $tmpfile | grep $rvip | sed 's/.*Started\s\(.*\)/\1/'`
+        READER_VIP_PRIMITIVES[$rvip]="1"
+    done
+    
+    rm -f $tmpfile
+    
+    # test the results
+    readersok=1
+    for h in ${host_rvip[*]}; do
+        if [ "$uniq_per_host" -eq 1 ]; then
+            # each vip should be on a distinct host
+            cnt=`echo ${host_rvip[*]} | grep -o $h | grep -c $h`
+            if [ "$cnt" -gt 1 ]; then
+                echo "host $h has more than one reader vip"
+                readersok=0
+            fi
+        fi
+                
+        #was replication ok on that host?
+        if [ "${repl_state[$h]}" -eq 0 ]; then
+            echo "replication is broken on $h and a reader vip is present"
+            readersok=0
+        fi        
+    done
+    
+    # Was all the vip started?
+    for rvip in ${!READER_VIP_PRIMITIVES[@]}; do
+        if [ "${READER_VIP_PRIMITIVES[$rvip]}" -eq 0 ]; then
+            echo "RVIP $rvip is not running"
+            readersok=0
+        fi
+    done
+
+    if [ "$writerok" -eq "1" -a "$readersok" -eq "1" ]; then
+        return $PRM_SUCCESS
+    else
+        return $PRM_FAIL
+    fi
+
+}

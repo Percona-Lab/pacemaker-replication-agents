@@ -1,0 +1,27 @@
+# This configuration file contains variables and is sourced by the 
+# test scripts.
+
+# ssh commands to connect to the nodes
+SSH1="ssh -p 22222 root@10.2.2.100"
+SSH2="ssh -p 22223 root@10.2.2.100"
+SSH3="ssh -p 22224 root@10.2.2.100"
+
+# MySQL command to connect locally
+MYSQL='mysql -B '
+
+# crm related info
+READER_ATTRIBUTE=readable
+WRITER_ATTRIBUTE=writable
+MYSQL_CRM_PRIMITIVE=p_mysql
+MYSQL_CRM_MS=ms_MySQL
+declare -A READER_VIP_PRIMITIVES=([reader_vip_1]=0 [reader_vip_2]=0)
+WRITER_VIP_PRIMITIVE="writer_vip"
+
+# return values
+PRM_SUCCESS=0  # success
+PRM_FAIL=1 # Normal failure
+PRM_OTHER=2 # unexpected failure
+
+declare -A uname_ssh  #populated by build_assoc_uname_ssh
+declare -A repl_state #populated by check_slaves
+declare -A host_rvip  #populated by check_VIPs

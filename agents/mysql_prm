@@ -22,7 +22,7 @@
 # An example usage in /etc/ha.d/haresources:
 #       node1  10.0.0.170 mysql
 #
-# Version: 20131206102552
+# Version: 20140103153739
 #
 # See usage() function below for more details...
 #
@@ -151,9 +151,11 @@ HOSTNAME=`uname -n`
 CRM_ATTR="${HA_SBIN_DIR}/crm_attribute -N $HOSTNAME "
 INSTANCE_ATTR_NAME=`echo ${OCF_RESOURCE_INSTANCE}| awk -F : '{print $1}'`
 CRM_ATTR_REPL_INFO="${HA_SBIN_DIR}/crm_attribute --type crm_config --name ${INSTANCE_ATTR_NAME}_REPL_INFO -s mysql_replication"
+CRM_ATTR_REPL_STATUS="${HA_SBIN_DIR}/crm_attribute --type crm_config --name ${INSTANCE_ATTR_NAME}_REPL_STATUS -s mysql_replication"
 CRM_RES="${HA_SBIN_DIR}/crm_resource"
 CRM_TICKET="${HA_SBIN_DIR}/crm_ticket"
 SSH="/usr/bin/ssh "
+MAX_BINLOG_SIZE_CACHE="${HA_RSCTMP}/max_binlog_size_cache"
 
 #######################################################################
 
@@ -507,6 +509,17 @@ get_read_only() {
     fi
 }
 
+get_binlog_size() {
+    # Check if read-only is set
+    local binlog_size
+
+    binlog_size=`mysql_run -Q -sw -O $MYSQL -N $MYSQL_OPTIONS_REPL \
+        -e "SHOW VARIABLES like 'max_binlog_size'" | awk '{print $2}'`
+
+    echo $binlog_size
+
+}
+
 is_slave() {
     # Determine whether the machine is currently running as a MySQL
     # slave, as determined per SHOW SLAVE STATUS. Returns 1 if SHOW
@@ -544,6 +557,22 @@ parse_slave_info() {
     sed -ne "s/^.* $1: \(.*\)$/\1/p" < $2
 }
 
+# get the current max_binlog_size.  Since this value rarely change, we cache
+# it for 1h
+get_max_binlog_size() {    
+    if [ -e $MAX_BINLOG_SIZE_CACHE ]; then
+        cat $MAX_BINLOG_SIZE_CACHE
+        if [ `date +%s` -gt "$((`stat -c %Z $MAX_BINLOG_SIZE_CACHE`+3600))" ]; then
+            rm $MAX_BINLOG_SIZE_CACHE
+        fi
+    else
+        mysql_run -Q -sw -O $MYSQL -N $MYSQL_OPTIONS_REPL \
+            -e "Show global variables like 'max_binlog_size';" | \
+            awk '{ print $2 }' > $MAX_BINLOG_SIZE_CACHE
+        cat $MAX_BINLOG_SIZE_CACHE
+    fi
+}
+
 get_slave_info() {
 
     local mysql_options tmpfile
@@ -572,8 +601,6 @@ get_slave_info() {
         else
             # Instance produced an empty "SHOW SLAVE STATUS" output --
             # instance is not a slave
-            
-
             
             ocf_log err "check_slave invoked on an instance that is not a replication slave."
 	        rm -f $tmpfile
@@ -848,7 +875,6 @@ unset_master(){
     # At this point, the master is read only so there should not be much binlogs to transfer
     # Let's wait for the last bits
     while true; do
-        
         get_slave_info
         rc=$?
         
@@ -857,9 +883,9 @@ unset_master(){
             ocf_log info "Slave IO thread not running, master likely dead or stopped"
             break;
         fi
-    
+        
         mysql_run -Q -sw -O $MYSQL $MYSQL_OPTIONS_REPL \
-        -e 'SHOW PROCESSLIST\G' > $tmpfile
+           -e 'SHOW PROCESSLIST\G' > $tmpfile
         
         if grep -i 'Master has sent all binlog to slave' $tmpfile >/dev/null; then
             ocf_log info "MySQL slave has finished reading master binary log"
@@ -1119,6 +1145,8 @@ mysql_monitor() {
     local rc
     local status_loglevel="err"
     local master_resource
+    local master_status_attr
+    local new_master_status_attr
     
     : ${OCF_RESKEY_CRM_meta_interval=0}
 
@@ -1149,6 +1177,14 @@ mysql_monitor() {
             rc=$?
             if [ $rc -eq 0 -o "$OCF_RESKEY_CRM_meta_role" = "Slave" ]; then
                 check_slave
+            else
+                update_data_master_status
+                master_status_attr=`$CRM_ATTR_REPL_STATUS --query  -q`
+                new_master_status_attr="$(get_master_status File)|$(get_master_status Position)|$(get_max_binlog_size)"
+                rm -f $master_status_file
+                if [ "$master_status_attr" != "$new_master_status_attr" ]; then
+                    $CRM_ATTR_REPL_STATUS -v "$new_master_status_attr"
+                fi
             fi
         else
             is_slave
@@ -1407,7 +1443,7 @@ mysql_promote() {
     update_data_master_status
     master_info="$(get_local_ip)|$(get_master_status File)|$(get_master_status Position)"
     ${CRM_ATTR_REPL_INFO} -v "$master_info"
-    rm -f $tmpfile
+    rm -f $master_status_file
 
     set_read_only off || return $OCF_ERR_GENERIC
 
@@ -1453,7 +1489,63 @@ mysql_notify() {
 
     case "$type_op" in
         'pre-promote')
-            # Nothing to do now here, new replication info not yet published
+        
+            # Master-score is normally calculated from slave-lag but it is better to use
+            # binlog offset position to pick the most up to date slave
+            master_status_attr=`$CRM_ATTR_REPL_STATUS --query  -q`
+            
+            if [ $? -eq 0 ]; then
+                # There's a master status entry although we don't know if it is 
+                # a valid one
+				last_reported_master_file=`echo $master_status_attr | cut -d'|' -f1`
+				last_reported_master_pos=`echo $master_status_attr | cut -d'|' -f2`
+				master_max_binlog_size=`echo $master_status_attr | cut -d'|' -f3`
+            
+				get_slave_info
+				if [ $? -eq 0 ]; then
+					# We'll be here only if the master crashed. In the event of 
+					# a graceful demote, a post-demote notification event would have occurred.
+					# The post-demote include an unset-master that 
+					# resets the slave after the completion of the IO and SQL
+					# threads.  The post-demote doesn't run if the master host
+					# crashed.
+				
+					# Let's establish the master score based on the following
+					# rule.
+					# score = ((file number diff)*master_max_binlog_size
+					#          + fileposdiff/10
+					#
+					# All events are at least 10 bytes so dividing by 10 doesn't reduce
+					# the resolution and increases the span.
+					#
+					# Since the master publishes its status only once per few
+					# seconds, the fileposdiff is likely positive.
+					# We'll cap all values to int signed range et target
+					# 1B as the value if a slave is fully in sync with the master
+					last_reported_master_file_number=`echo $last_reported_master_file | cut -d'.' -f2`
+					master_log_file_number=`echo $master_log_file | cut -d'.' -f2`
+					
+					master_score=$(((1000000000+\
+					     ($master_log_file_number-$last_reported_master_file_number)*$master_max_binlog_size+\
+					     $master_log_pos-$last_reported_master_pos)/10))
+					
+					# now, the caps, the upper cap is unlikely
+					if [ $master_score -gt 2147483647 ]; then
+						master_score=2147483647
+					fi
+					
+					# the lower cap could happened if a slave lags behind by
+					# more then 30GB of binlog. In that case... do we really care
+					# if we floor the value
+					
+					if [ $master_score -lt -2147483647 ]; then
+						master_score=-2147483647
+					fi
+					
+					$CRM_MASTER -v $master_score 
+
+				fi
+			fi
 
         ;;
         'post-promote')
@@ -1689,7 +1781,7 @@ resources=`$CRM_RES --list`
 if [[ "$OCF_RESKEY_crm_feature_set" > "3.0.1" ]]; then
     glb_master_resource=`echo "$resources" | grep $INSTANCE_ATTR_NAME | awk '{print $3}' | head -n 1`
 else
-    # older versions don't write the primitive name in the resources list
+    # older versions of Pacemaker don't write the primitive name in the resources list
     for msr in `echo "$resources" | grep 'Master/Slave' | awk '{print $3}'`; do
         isThere=`$CRM_RES -q -r $msr | grep primitive | grep -c $INSTANCE_ATTR_NAME`
         if [ "$isThere" -gt "0" ]; then
