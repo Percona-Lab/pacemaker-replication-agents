@@ -1,0 +1,942 @@
+#!/bin/sh
+#
+#	$Id: IPaddr2.in,v 1.24 2006/08/09 13:01:54 lars Exp $
+#
+#       OCF Resource Agent compliant IPaddr2 script.
+#
+# 	Based on work by Tuomo Soini, ported to the OCF RA API by Lars
+# 	Marowsky-Brée. Implements Cluster Alias IP functionality too.
+#
+#	Cluster Alias IP cleanup, fixes and testing by Michael Schwartzkopff
+#
+#
+# Copyright (c) 2003 Tuomo Soini
+# Copyright (c) 2004-2006 SUSE LINUX AG, Lars Marowsky-Brée
+#                    All Rights Reserved.
+#
+# This program is free software; you can redistribute it and/or modify
+# it under the terms of version 2 of the GNU General Public License as
+# published by the Free Software Foundation.
+#
+# This program is distributed in the hope that it would be useful, but
+# WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+#
+# Further, this software is distributed without any warranty that it is
+# free of the rightful claim of any third person regarding infringement
+# or the like.  Any license provided herein, whether implied or
+# otherwise, applies only to this software file.  Patent licenses, if
+# any, provided herein do not apply to combinations of this program with
+# other software, or any other product whatsoever.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program; if not, write the Free Software Foundation,
+# Inc., 59 Temple Place - Suite 330, Boston MA 02111-1307, USA.
+#
+#
+
+
+# TODO: 
+# - There ought to be an ocf_run_cmd function which does all logging,
+#   timeout handling etc for us
+# - Make this the standard IP address agent on Linux; the other
+#   platforms simply should ignore the additional parameters OR can use
+#   the legacy heartbeat resource script...
+# - Check LVS <-> clusterip incompatibilities.
+#
+#	OCF parameters are as below
+#	OCF_RESKEY_ip
+#	OCF_RESKEY_broadcast
+#	OCF_RESKEY_nic
+#	OCF_RESKEY_cidr_netmask
+#	OCF_RESKEY_iflabel
+#	OCF_RESKEY_mac
+#	OCF_RESKEY_clusterip_hash
+#	OCF_RESKEY_arp_interval
+#	OCF_RESKEY_arp_count
+#	OCF_RESKEY_arp_bg
+#	OCF_RESKEY_arp_mac
+#
+#	OCF_RESKEY_CRM_meta_clone
+#	OCF_RESKEY_CRM_meta_clone_max
+
+
+#######################################################################
+# Initialization:
+
+: ${OCF_FUNCTIONS_DIR=${OCF_ROOT}/lib/heartbeat}
+. ${OCF_FUNCTIONS_DIR}/ocf-shellfuncs
+
+SENDARP=$HA_BIN/send_arp
+FINDIF=$HA_BIN/findif
+VLDIR=$HA_RSCTMP
+SENDARPPIDDIR=$HA_RSCTMP
+CIP_lockfile=$HA_RSCTMP/IPaddr2-CIP-${OCF_RESKEY_ip}
+HOSTNAME=`uname -n`
+INSTANCE_ATTR_NAME=`echo ${OCF_RESOURCE_INSTANCE}| awk -F : '{print $1}'`
+#######################################################################
+
+meta_data() {
+	cat <<END
+<?xml version="1.0"?>
+<!DOCTYPE resource-agent SYSTEM "ra-api-1.dtd">
+<resource-agent name="IPaddr2">
+<version>1.0</version>
+
+<longdesc lang="en">
+This Linux-specific resource manages IP alias IP addresses.
+It can add an IP alias, or remove one.
+In addition, it can implement Cluster Alias IP functionality
+if invoked as a clone resource.
+</longdesc>
+
+<shortdesc lang="en">Manages virtual IPv4 addresses (Linux specific version)</shortdesc>
+
+<parameters>
+<parameter name="ip" unique="1" required="1">
+<longdesc lang="en">
+The IPv4 address to be configured in dotted quad notation, for example
+"192.168.1.1".
+</longdesc>
+<shortdesc lang="en">IPv4 address</shortdesc>
+<content type="string" default="" />
+</parameter>
+<parameter name="nic" unique="0">
+<longdesc lang="en">
+The base network interface on which the IP address will be brought
+online. 
+
+If left empty, the script will try and determine this from the
+routing table.
+
+Do NOT specify an alias interface in the form eth0:1 or anything here;
+rather, specify the base interface only.
+
+Prerequisite:
+
+There must be at least one static IP address, which is not managed by
+the cluster, assigned to the network interface.
+
+If you can not assign any static IP address on the interface,
+modify this kernel parameter:
+sysctl -w net.ipv4.conf.all.promote_secondaries=1
+(or per device)
+
+</longdesc>
+<shortdesc lang="en">Network interface</shortdesc>
+<content type="string" default="eth0"/>
+</parameter>
+
+<parameter name="cidr_netmask">
+<longdesc lang="en">
+The netmask for the interface in CIDR format
+(e.g., 24 and not 255.255.255.0)
+
+If unspecified, the script will also try to determine this from the
+routing table.
+</longdesc>
+<shortdesc lang="en">CIDR netmask</shortdesc>
+<content type="string" default=""/>
+</parameter>
+
+<parameter name="broadcast">
+<longdesc lang="en">
+Broadcast address associated with the IP. If left empty, the script will
+determine this from the netmask.
+</longdesc>
+<shortdesc lang="en">Broadcast address</shortdesc>
+<content type="string" default=""/>
+</parameter>
+
+<parameter name="iflabel">
+<longdesc lang="en">
+You can specify an additional label for your IP address here.
+This label is appended to your interface name.
+If a label is specified in nic name, this parameter has no effect.
+</longdesc>
+<shortdesc lang="en">Interface label</shortdesc>
+<content type="string" default=""/>
+</parameter>
+
+<parameter name="lvs_support">
+<longdesc lang="en">
+Enable support for LVS Direct Routing configurations. In case a IP
+address is stopped, only move it to the loopback device to allow the
+local node to continue to service requests, but no longer advertise it
+on the network.
+</longdesc>
+<shortdesc lang="en">Enable support for LVS DR</shortdesc>
+<content type="boolean" default="false"/>
+</parameter>
+
+<parameter name="mac">
+<longdesc lang="en">
+Set the interface MAC address explicitly. Currently only used in case of
+the Cluster IP Alias. Leave empty to chose automatically.
+
+</longdesc>
+<shortdesc lang="en">Cluster IP MAC address</shortdesc>
+<content type="string" default=""/>
+</parameter>
+
+<parameter name="clusterip_hash">
+<longdesc lang="en">
+Specify the hashing algorithm used for the Cluster IP functionality.
+
+</longdesc>
+<shortdesc lang="en">Cluster IP hashing function</shortdesc>
+<content type="string" default="sourceip-sourceport"/>
+</parameter>
+
+<parameter name="unique_clone_address">
+<longdesc lang="en">
+If true, add the clone ID to the supplied value of ip to create
+a unique address to manage 
+</longdesc>
+<shortdesc lang="en">Create a unique address for cloned instances</shortdesc>
+<content type="boolean" default="false"/>
+</parameter>
+
+<parameter name="arp_interval">
+<longdesc lang="en">
+Specify the interval between unsolicited ARP packets in milliseconds.
+</longdesc>
+<shortdesc lang="en">ARP packet interval in ms</shortdesc>
+<content type="integer" default="200"/>
+</parameter>
+
+<parameter name="arp_count">
+<longdesc lang="en">
+Number of unsolicited ARP packets to send.
+</longdesc>
+<shortdesc lang="en">ARP packet count</shortdesc>
+<content type="integer" default="5"/>
+</parameter>
+
+<parameter name="arp_bg">
+<longdesc lang="en">
+Whether or not to send the arp packets in the background.
+</longdesc>
+<shortdesc lang="en">ARP from background</shortdesc>
+<content type="string" default="yes"/>
+</parameter>
+
+<parameter name="arp_mac">
+<longdesc lang="en">
+MAC address to send the ARP packets too.
+
+You really shouldn't be touching this.
+
+</longdesc>
+<shortdesc lang="en">ARP MAC</shortdesc>
+<content type="string" default="ffffffffffff"/>
+</parameter>
+
+<parameter name="flush_routes">
+<longdesc lang="en">
+Flush the routing table on stop. This is for
+applications which use the cluster IP address
+and which run on the same physical host that the
+IP address lives on. The Linux kernel may force that
+application to take a shortcut to the local loopback
+interface, instead of the interface the address
+is really bound to. Under those circumstances, an
+application may, somewhat unexpectedly, continue
+to use connections for some time even after the
+IP address is deconfigured. Set this parameter in
+order to immediately disable said shortcut when the
+IP address goes away.
+</longdesc>
+<shortdesc lang="en">Flush kernel routing table on stop</shortdesc>
+<content type="boolean" default="false"/>
+</parameter>
+
+</parameters>
+<actions>
+<action name="start"   timeout="20s" />
+<action name="stop"    timeout="20s" />
+<action name="status" depth="0"  timeout="20s" interval="10s" />
+<action name="monitor" depth="0"  timeout="20s" interval="10s" />
+<action name="meta-data"  timeout="5s" />
+<action name="validate-all"  timeout="20s" />
+</actions>
+</resource-agent>
+END
+
+	exit $OCF_SUCCESS
+}
+
+ip_init() {
+	local rc
+
+	if [ X`uname -s` != "XLinux" ]; then
+		ocf_log err "IPaddr2 only supported Linux."
+		exit $OCF_ERR_INSTALLED
+	fi
+
+	if [ X"$OCF_RESKEY_ip" = "X" ]; then
+		ocf_log err "IP address (the ip parameter) is mandatory"
+		exit $OCF_ERR_CONFIGURED
+	fi
+
+	if
+          case $__OCF_ACTION in
+            start|stop)		ocf_is_root;;
+            *)			true;;
+          esac
+        then
+          : YAY!
+        else
+		ocf_log err "You must be root for $__OCF_ACTION operation."
+		exit $OCF_ERR_PERM
+	fi
+
+	BASEIP="$OCF_RESKEY_ip"
+	BRDCAST="$OCF_RESKEY_broadcast"
+	NIC="$OCF_RESKEY_nic"
+        # Note: We had a version out there for a while which used
+        # netmask instead of cidr_netmask. Don't remove this aliasing code!
+        if
+          [ ! -z "$OCF_RESKEY_netmask" -a -z "$OCF_RESKEY_cidr_netmask" ]
+        then
+	  OCF_RESKEY_cidr_netmask=$OCF_RESKEY_netmask
+	  export OCF_RESKEY_cidr_netmask
+        fi
+	NETMASK="$OCF_RESKEY_cidr_netmask"
+	IFLABEL="$OCF_RESKEY_iflabel"
+	IF_MAC="$OCF_RESKEY_mac"
+
+	LVS_SUPPORT=0
+	if [ x"${OCF_RESKEY_lvs_support}" = x"true" \
+	    -o x"${OCF_RESKEY_lvs_support}" = x"on" \
+	    -o x"${OCF_RESKEY_lvs_support}" = x"1" ]; then
+	    LVS_SUPPORT=1
+	fi
+
+	IP_INC_GLOBAL=${OCF_RESKEY_CRM_meta_clone_max:-1}
+	IP_INC_NO=`expr ${OCF_RESKEY_CRM_meta_clone:-0} + 1`
+
+	if [ $LVS_SUPPORT -gt 0 ] && [ $IP_INC_GLOBAL -gt 1 ]; then
+		ocf_log err "LVS and load sharing do not go together well"
+		exit $OCF_ERR_CONFIGURED
+	fi
+
+	ARP_INTERVAL_MS=${OCF_RESKEY_arp_interval:-200}
+	ARP_REPEAT=${OCF_RESKEY_arp_count:-5}
+	ARP_BACKGROUND=${OCF_RESKEY_arp_bg:-yes}
+	ARP_NETMASK=${OCF_RESKEY_arp_mac:-ffffffffffff}
+
+	if ocf_is_decimal "$IP_INC_GLOBAL" && [ $IP_INC_GLOBAL -gt 0 ]; then
+		:
+	else
+		ocf_log err "Invalid OCF_RESKEY_incarnations_max_global [$IP_INC_GLOBAL], should be positive integer"
+		exit $OCF_ERR_CONFIGURED
+	fi
+
+	# $FINDIF takes its parameters from the environment
+	#
+	NICINFO=`$FINDIF -C`
+	rc=$?
+	if
+	  [ $rc -eq 0 ]
+        then
+	    NICINFO=`echo $NICINFO | sed -e 's/netmask\ //;s/broadcast\ //'`
+	    NIC=`echo "$NICINFO" | cut -d" " -f1`
+	    NETMASK=`echo "$NICINFO" | cut -d" " -f2`
+	    BRDCAST=`echo "$NICINFO" | cut -d" " -f3`
+	else
+		# findif couldn't find the interface
+		if ocf_is_probe; then
+			ocf_log info "[$FINDIF -C] failed"
+			exit $OCF_NOT_RUNNING
+		elif [ "$__OCF_ACTION" = stop ]; then
+			ocf_log warn "[$FINDIF -C] failed"
+			exit $OCF_SUCCESS
+		else
+			ocf_log err "[$FINDIF -C] failed"
+			exit $rc
+		fi
+	fi
+	
+	SENDARPPIDFILE="$SENDARPPIDDIR/send_arp-$BASEIP"
+
+	case $NIC in
+	    *:*)
+		IFLABEL=$NIC
+		NIC=`echo $NIC | sed 's/:.*//'`
+		;;
+	    *)
+		if [ -n "$IFLABEL" ]; then
+			IFLABEL=${NIC}:${IFLABEL}
+		fi
+		;;
+	esac
+
+	if [ "$IP_INC_GLOBAL" -gt 1 ] && ! ocf_is_true "$OCF_RESKEY_unique_clone_address"; then
+		IP_CIP="yes"
+		IP_CIP_HASH="${OCF_RESKEY_clusterip_hash:-sourceip-sourceport}"
+		if [ -z "$IF_MAC" ]; then
+			# Choose a MAC
+			# 1. Concatenate some input together
+			# 2. This doesn't need to be a cryptographically
+			#    secure hash.
+			# 3. Drop everything after the first 6 octets (12 chars)
+			# 4. Delimit the octets with ':'
+			# 5. Make sure the first octet is odd,
+			#    so the result is a multicast MAC
+			IF_MAC=`echo $BASEIP $NETMASK $BRDCAST |	\
+				md5sum |				\
+				sed -e 's#\(............\).*#\1#'	\
+				    -e 's#..#&:#g; s#:$##'		\
+				    -e 's#^\(.\)[02468aAcCeE]#\11#'`
+		fi
+		IP_CIP_FILE="/proc/net/ipt_CLUSTERIP/$BASEIP"
+	fi
+}
+
+#
+#	Find out which interface serves the given IP address
+#	The argument is an IP address, and its output
+#	is an interface name (e.g., "eth0").
+#
+find_interface() {
+	#
+	# List interfaces but exclude FreeS/WAN ipsecN virtual interfaces
+	#
+	local iface=`$IP2UTIL -o -f inet addr show | grep "\ $BASEIP/$NETMASK" \
+		| cut -d ' ' -f2 | grep -v '^ipsec[0-9][0-9]*$'`
+	echo $iface
+	return 0
+}
+
+#
+#        Delete an interface
+#
+delete_interface () {
+	ipaddr="$1"
+	iface="$2"
+	netmask="$3"
+
+	CMD="$IP2UTIL -f inet addr delete $ipaddr/$netmask dev $iface"
+
+	ocf_run $CMD || return $OCF_ERR_GENERIC
+
+	if ocf_is_true $OCF_RESKEY_flush_routes; then
+	    ocf_run $IP2UTIL route flush cache
+	fi
+
+	return $OCF_SUCCESS
+}
+
+#
+#        Add an interface
+#
+add_interface () {
+	ipaddr="$1"
+	netmask="$2"
+	broadcast="$3"
+	iface="$4"
+	label="$5"
+
+	CMD="$IP2UTIL -f inet addr add $ipaddr/$netmask brd $broadcast dev $iface"
+
+	if [ ! -z "$label" ]; then
+		CMD="$CMD label $label"
+	fi
+
+	ocf_log info "$CMD"
+	$CMD
+
+	if [ $? -ne 0 ]; then
+		return $OCF_ERR_GENERIC
+	fi
+
+	CMD="$IP2UTIL link set $iface up"
+
+	ocf_log info "$CMD"
+	$CMD
+
+	return $?
+}
+
+#
+#        Delete a route
+#
+delete_route () {
+	prefix="$1"
+	iface="$2"
+
+	CMD="$IP2UTIL route delete $prefix dev $iface"
+
+	ocf_log info "$CMD"
+	$CMD
+
+	return $?
+}
+
+#      On Linux systems the (hidden) loopback interface may
+#      conflict with the requested IP address. If so, this
+#      unoriginal code will remove the offending loopback address
+#      and save it in VLDIR so it can be added back in later
+#      when the IPaddr is released.
+#
+#      TODO: This is very ugly and should be controlled by an additional
+#      instance parameter. Or even: multi-state, with the IP only being
+#      "active" on the master!?
+#
+remove_conflicting_loopback() {
+	ipaddr="$1"
+	netmask="$2"
+	broadcast="$3"
+	ifname="$4"
+
+	ocf_log info "Removing conflicting loopback $ifname."
+	if
+		echo "$ipaddr $netmask $broadcast $ifname" > "$VLDIR/$ipaddr"
+	then
+		: Saved loopback information in $VLDIR/$ipaddr
+	else
+		ocf_log err "Could not save conflicting loopback $ifname." \
+		       "it will not be restored."
+	fi
+	delete_interface "$ipaddr" "$ifname" "$netmask"
+	# Forcibly remove the route (if it exists) to the loopback.
+	delete_route "$ipaddr" "$ifname"
+}
+
+#
+#	On Linux systems the (hidden) loopback interface may
+#	need to be restored if it has been taken down previously
+#	by remove_conflicting_loopback()
+#
+restore_loopback() {
+	ipaddr="$1"
+
+	if [ -s "$VLDIR/$ipaddr" ]; then
+		ifinfo=`cat "$VLDIR/$ipaddr"`
+		ocf_log info "Restoring loopback IP Address " \
+		    "$ifinfo."
+		add_interface $ifinfo
+		rm -f "$VLDIR/$ipaddr"
+	fi
+}
+
+#
+# Run send_arp to note peers about new mac address
+#
+run_send_arp() {
+	ARGS="-i $ARP_INTERVAL_MS -r $ARP_REPEAT -p $SENDARPPIDFILE $NIC $BASEIP auto not_used not_used"
+	if [ "x$IP_CIP" = "xyes" ] ; then
+	    if [ x = "x$IF_MAC" ] ; then
+		MY_MAC=auto
+	    else
+		MY_MAC=`echo ${IF_MAC} | sed -e 's/://g'`
+	    fi
+	    ARGS="-i $ARP_INTERVAL_MS -r $ARP_REPEAT -p $SENDARPPIDFILE $NIC $BASEIP $MY_MAC not_used not_used"
+	fi
+	ocf_log info "$SENDARP $ARGS"
+	case $ARP_BACKGROUND in
+	yes) 
+		($SENDARP $ARGS || ocf_log err "Could not send gratuitous arps" &) >&2
+		;;
+	*)
+		$SENDARP $ARGS || ocf_log err "Could not send gratuitous arps"
+		;;
+	esac
+}
+
+#
+# Run ipoibarping to note peers about new Infiniband address
+#
+run_send_ib_arp() {
+	ARGS="-q -c $ARP_REPEAT -U -I $NIC $BASEIP"
+	ocf_log info "ipoibarping $ARGS"
+	case $ARP_BACKGROUND in
+	yes)
+		(ipoibarping $ARGS || ocf_log err "Could not send gratuitous arps" &) >&2
+		;;
+	*)
+		ipoibarping $ARGS || ocf_log err "Could not send gratuitous arps"
+		;;
+	esac
+}
+
+# Do we already serve this IP address?
+#
+# returns:
+# ok = served (for CIP: + hash bucket)
+# partial = served and no hash bucket (CIP only)
+# partial2 = served and no CIP iptables rule
+# no = nothing
+#
+ip_served() {
+	if [ -z "$NIC" ]; then # no nic found or specified
+		echo "no"
+		return 0
+	fi
+
+	cur_nic="`find_interface $BASEIP`"
+
+	if [ -z "$cur_nic" ]; then
+		echo "no"
+		return 0
+	fi
+
+	if [ -z "$IP_CIP" ]; then
+		case $cur_nic in
+		lo*)	if [ "$LVS_SUPPORT" = "1" ]; then
+				echo "no"
+				return 0
+			fi
+			;;
+		esac
+
+		echo "ok"
+		return 0
+	fi
+
+	# Special handling for the CIP:
+	if [ ! -e $IP_CIP_FILE ]; then
+		echo "partial2"
+		return 0
+	fi
+	if egrep -q "(^|,)${IP_INC_NO}(,|$)" $IP_CIP_FILE ; then
+		echo "ok"
+		return 0
+	else
+		echo "partial"
+		return 0
+	fi
+
+	exit $OCF_ERR_GENERIC
+}
+
+#######################################################################
+
+ip_usage() {
+	cat <<END
+usage: $0 {start|stop|status|monitor|validate-all|meta-data}
+
+Expects to have a fully populated OCF RA-compliant environment set.
+END
+}
+
+ip_start() {
+	if [ -z "$NIC" ]; then # no nic found or specified
+		exit $OCF_ERR_CONFIGURED
+	fi
+
+	if [ -n "$IP_CIP" ]; then
+	    # Cluster IPs need special processing when the first bucket
+	    #  is added to the node... take a lock to make sure only one
+	    #  process executes that code
+	    ocf_take_lock $CIP_lockfile
+	    ocf_release_lock_on_exit $CIP_lockfile
+	fi
+
+	#
+	#	Do we already service this IP address?
+	#
+	local ip_status=`ip_served`
+
+	if [ "$ip_status" = "ok" ]; then
+		exit $OCF_SUCCESS
+	fi
+	
+	if [ -n "$IP_CIP" ] && [ $ip_status = "no" ] || [ $ip_status = "partial2" ]; then
+		$MODPROBE ip_conntrack
+		$IPTABLES -I INPUT -d $BASEIP -i $NIC -j CLUSTERIP \
+				--new \
+				--clustermac $IF_MAC \
+				--total-nodes $IP_INC_GLOBAL \
+				--local-node $IP_INC_NO \
+				--hashmode $IP_CIP_HASH
+		if [ $? -ne 0 ]; then
+			ocf_log err "iptables failed"
+			exit $OCF_ERR_GENERIC
+		fi
+	fi
+
+	if [ -n "$IP_CIP" ] && [ $ip_status = "partial" ]; then
+		echo "+$IP_INC_NO" >$IP_CIP_FILE
+	fi
+	
+	if [ "$ip_status" = "no" ]; then
+		if [ "$LVS_SUPPORT" = "1" ]; then
+			case `find_interface $BASEIP` in
+			lo*)
+				remove_conflicting_loopback $BASEIP 32 255.255.255.255 lo
+				;;
+			esac
+		fi
+		
+		add_interface $BASEIP $NETMASK $BRDCAST $NIC $IFLABEL
+		
+		if [ $? -ne 0 ]; then
+			ocf_log err "$CMD failed."
+			exit $OCF_ERR_GENERIC
+		fi
+	fi
+
+	case $NIC in
+	lo*)
+		: no need to run send_arp on loopback
+		;;
+	ib*)
+		run_send_ib_arp
+		;;
+	*)
+	    if [ -x $SENDARP ]; then
+		run_send_arp
+	    fi
+		;;
+	esac
+
+	set_clone_count
+	exit $OCF_SUCCESS
+}
+
+ip_stop() {
+	local ip_del_if="yes"
+	if [ -n "$IP_CIP" ]; then
+	    # Cluster IPs need special processing when the last bucket
+	    #  is removed from the node... take a lock to make sure only one
+	    #  process executes that code
+	    ocf_take_lock $CIP_lockfile
+	    ocf_release_lock_on_exit $CIP_lockfile
+	fi
+	
+	if [ -f "$SENDARPPIDFILE" ] ; then
+		kill `cat "$SENDARPPIDFILE"`
+		if [ $? -ne 0 ]; then
+			ocf_log warn "Could not kill previously running send_arp for $BASEIP"
+		else
+			ocf_log info "killed previously running send_arp for $BASEIP"
+			rm -f "$SENDARPPIDFILE"
+		fi
+	fi
+	local ip_status=`ip_served`
+	ocf_log info "IP status = $ip_status, IP_CIP=$IP_CIP"
+
+	if [ $ip_status = "no" ]; then
+		: Requested interface not in use
+		exit $OCF_SUCCESS
+	fi
+
+	if [ -n "$IP_CIP" ] && [ $ip_status != "partial2" ]; then
+		if [ $ip_status = "partial" ]; then
+			exit $OCF_SUCCESS
+		fi
+		echo "-$IP_INC_NO" >$IP_CIP_FILE
+		if [ "x$(cat $IP_CIP_FILE)" = "x" ]; then
+			ocf_log info $BASEIP, $IP_CIP_HASH
+			i=1
+			while [ $i -le $IP_INC_GLOBAL ]; do
+				ocf_log info $i
+				$IPTABLES -D INPUT -d $BASEIP -i $NIC -j CLUSTERIP \
+					--new \
+					--clustermac $IF_MAC \
+					--total-nodes $IP_INC_GLOBAL \
+					--local-node $i \
+					--hashmode $IP_CIP_HASH
+				i=`expr $i + 1`
+			done
+		else
+			ip_del_if="no"		
+		fi
+	fi
+	
+	if [ "$ip_del_if" = "yes" ]; then
+		delete_interface $BASEIP $NIC $NETMASK
+		if [ $? -ne 0 ]; then
+			exit $OCF_ERR_GENERIC
+		fi
+	
+		if [ "$LVS_SUPPORT" = 1 ]; then
+			restore_loopback "$BASEIP"
+		fi
+	fi
+
+	set_clone_count
+	exit $OCF_SUCCESS
+}
+
+# get the number of instance running
+get_clone_count() {
+    local attr_value
+    local rc
+
+    attr_value=`${HA_SBIN_DIR}/crm_attribute -N $HOSTNAME -l reboot --name ${INSTANCE_ATTR_NAME}_clone_count --query -q`
+    rc=$?
+    if [ "$rc" -eq "0" ]; then
+        echo $attr_value
+    else
+        echo -1
+    fi
+
+}
+
+# Set the attribute controlling the readers VIP
+set_clone_count() {
+    local curr_attr_value next_attr_value
+
+    curr_attr_value=$(get_clone_count)
+    next_attr_value=`cat $IP_CIP_FILE | awk -F, '{print NF}'`
+    if [ "$curr_attr_value" -ne "$next_attr_value" ]; then
+        ${HA_SBIN_DIR}/crm_attribute -N $HOSTNAME -l reboot --name ${INSTANCE_ATTR_NAME}_clone_count -v $next_attr_value
+    fi
+
+}
+
+ip_monitor() {
+	# TODO: Implement more elaborate monitoring like checking for
+	# interface health maybe via a daemon like FailSafe etc...
+
+	local ip_status=`ip_served`
+	case $ip_status in
+	ok)
+		set_clone_count
+		return $OCF_SUCCESS
+		;;
+	partial|no|partial2)
+		exit $OCF_NOT_RUNNING
+		;;
+	*)
+		# Errors on this interface?
+		return $OCF_ERR_GENERIC
+		;;
+	esac
+}
+
+ip_validate() {
+    check_binary $IP2UTIL
+    IP_CIP=
+
+    ip_init
+
+    case "$NIC" in
+    ib*) 	check_binary ipoibarping
+    		;;
+    esac
+
+    if [ -n "$IP_CIP" ]; then
+	check_binary $IPTABLES
+	check_binary $MODPROBE
+    fi
+
+# $BASEIP, $NETMASK, $NIC , $IP_INC_GLOBAL, and $BRDCAST have been checked within ip_init,
+# do not bother here.
+
+    if ocf_is_true "$OCF_RESKEY_unique_clone_address" &&
+	    ! ocf_is_true "$OCF_RESKEY_CRM_meta_globally_unique"; then
+	ocf_log err "unique_clone_address makes sense only with meta globally_unique set"
+	exit $OCF_ERR_CONFIGURED
+    fi
+
+    if ocf_is_decimal "$ARP_INTERVAL_MS" && [ $ARP_INTERVAL_MS -gt 0 ]; then
+	:
+    else
+	ocf_log err "Invalid OCF_RESKEY_arp_interval [$ARP_INTERVAL_MS]"
+	exit $OCF_ERR_CONFIGURED
+    fi
+
+    if ocf_is_decimal "$ARP_REPEAT" && [ $ARP_REPEAT -gt 0 ]; then
+	:
+    else
+	ocf_log err "Invalid OCF_RESKEY_arp_count [$ARP_REPEAT]"
+	exit $OCF_ERR_CONFIGURED
+    fi
+
+    if [ -n "$IP_CIP" ]; then
+
+	local valid=1
+
+	case $IP_CIP_HASH in
+	sourceip|sourceip-sourceport|sourceip-sourceport-destport)
+		;;
+	*)
+		ocf_log err "Invalid OCF_RESKEY_clusterip_hash [$IP_CIP_HASH]"
+		exit $OCF_ERR_CONFIGURED
+		;;
+	esac
+
+	if [ "$LVS_SUPPORT" = 1 ]; then
+		ecf_log err "LVS and load sharing not advised to try"
+		exit $OCF_ERR_CONFIGURED
+	fi
+
+	case $IF_MAC in
+	[0-9a-zA-Z][13579bBdDfF][!0-9a-zA-Z][0-9a-zA-Z][0-9a-zA-Z][!0-9a-zA-Z][0-9a-zA-Z][0-9a-zA-Z][!0-9a-zA-Z][0-9a-zA-Z][0-9a-zA-Z][!0-9a-zA-Z][0-9a-zA-Z][0-9a-zA-Z][!0-9a-zA-Z][0-9a-zA-Z][0-9a-zA-Z])
+		;;
+	*)
+		valid=0
+		;;
+	esac
+
+	if [ $valid -eq 0 ]; then
+	  ocf_log err "Invalid IF_MAC [$IF_MAC]"
+	  exit $OCF_ERR_CONFIGURED
+	fi
+
+    fi
+}
+
+##########################################################################
+# If DEBUG_LOG is set, make this resource agent easy to debug: set up the
+# debug log and direct all output to it.  Otherwise, redirect to /dev/null.
+# The log directory must be a directory owned by root, with permissions 0700,
+# and the log must be writable and not a symlink.
+##########################################################################
+DEBUG_LOG="/tmp/IPaddr2.ocf.ra.debug/log"
+if [ "${DEBUG_LOG}" -a -w "${DEBUG_LOG}" -a ! -L "${DEBUG_LOG}" ]; then
+    DEBUG_LOG_DIR="${DEBUG_LOG%/*}"
+    if [ -d "${DEBUG_LOG_DIR}" ]; then
+        exec 9>>"$DEBUG_LOG"
+        exec 2>&9
+        date >&9
+        echo "$*" >&9
+        env | grep OCF_ | sort >&9
+        set -x
+    else
+        exec 9>/dev/null
+    fi
+fi
+
+if ocf_is_true "$OCF_RESKEY_unique_clone_address"; then
+    prefix=`echo $OCF_RESKEY_ip | awk -F. '{print $1"."$2"."$3}'`
+    suffix=`echo $OCF_RESKEY_ip | awk -F. '{print $4}'`
+    suffix=`expr ${OCF_RESKEY_CRM_meta_clone:-0} + $suffix`
+    OCF_RESKEY_ip="$prefix.$suffix"
+fi
+
+case $__OCF_ACTION in
+meta-data)	meta_data
+		;;
+usage|help)	ip_usage
+		exit $OCF_SUCCESS
+		;;
+esac
+
+ip_validate
+
+case $__OCF_ACTION in
+start)		ip_start
+		;;
+stop)		ip_stop
+		;;
+status)		ip_status=`ip_served`
+		if [ $ip_status = "ok" ]; then
+			echo "running"
+			exit $OCF_SUCCESS
+		else
+			echo "stopped"
+			exit $OCF_NOT_RUNNING
+		fi
+		;;
+monitor)	ip_monitor
+		;;
+validate-all)	;;
+*)		ip_usage
+		exit $OCF_ERR_UNIMPLEMENTED
+		;;
+esac
