@@ -388,9 +388,10 @@ ip_init() {
 			#    so the result is a multicast MAC
 			IF_MAC=`echo $BASEIP $NETMASK $BRDCAST |	\
 				md5sum |				\
-				sed -e 's#\(............\).*#\1#'	\
+				sed -e 's#\(......\).*#\1#'	\
 				    -e 's#..#&:#g; s#:$##'		\
 				    -e 's#^\(.\)[02468aAcCeE]#\11#'`
+			IF_MAC=`echo "01:00:5E:$IF_MAC"`
 		fi
 		IP_CIP_FILE="/proc/net/ipt_CLUSTERIP/$BASEIP"
 	fi
