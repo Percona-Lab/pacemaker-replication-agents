@@ -9,6 +9,8 @@
 #
 #	Cluster Alias IP cleanup, fixes and testing by Michael Schwartzkopff
 #
+#	Addition of clone_count attribute to fix distribution after 
+#	recovery, Yves Trudeau. 
 #
 # Copyright (c) 2003 Tuomo Soini
 # Copyright (c) 2004-2006 SUSE LINUX AG, Lars Marowsky-Brée
