@@ -509,17 +509,6 @@ get_read_only() {
     fi
 }
 
-get_binlog_size() {
-    # Check if read-only is set
-    local binlog_size
-
-    binlog_size=`mysql_run -Q -sw -O $MYSQL -N $MYSQL_OPTIONS_REPL \
-        -e "SHOW VARIABLES like 'max_binlog_size'" | awk '{print $2}'`
-
-    echo $binlog_size
-
-}
-
 is_slave() {
     # Determine whether the machine is currently running as a MySQL
     # slave, as determined per SHOW SLAVE STATUS. Returns 1 if SHOW
