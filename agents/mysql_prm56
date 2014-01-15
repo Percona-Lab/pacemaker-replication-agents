@@ -22,7 +22,7 @@
 # An example usage in /etc/ha.d/haresources:
 #       node1  10.0.0.170 mysql
 #
-# Version: 20140115151911
+# Version: 20140115153427
 #
 # See usage() function below for more details...
 #
@@ -1022,7 +1022,7 @@ get_master_status() {
    local server_uuid last_gtid
    
    server_uuid=`cat $master_status_file | grep SERVER_UUID | awk '{ print $2 }'`
-   last_gtid=`cat $master_status_file | sed "s/.*$server_uuid:[0-9]*-\([0-9]*\).*/\1/"`
+   last_gtid=`cat $master_status_file | grep GTID_EXECUTED | sed "s/.*$server_uuid:[0-9]*-\([0-9]*\).*/\1/"`
    
    echo "$server_uuid:$last_gtid"
 }
