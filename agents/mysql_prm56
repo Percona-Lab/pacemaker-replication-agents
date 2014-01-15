@@ -133,6 +133,7 @@ MYSQL_BINDIR=`dirname ${OCF_RESKEY_binary}`
 
 : ${OCF_RESKEY_geo_remote_IP}=""
 : ${OCF_RESKEY_booth_master_ticket}=${OCF_RESKEY_booth_master_ticket_default}
+: ${OCF_RESKEY_post_promote_script}=""
 
 #######################################################################
 # Convenience variables
@@ -443,6 +444,15 @@ this is the name of the ticket used to identify the master side.
 <content type="string" default="${OCF_RESKEY_booth_master_ticket_default}" />
 </parameter>
 
+<parameter name="post_promote_script" unique="1" required="0">
+<longdesc lang="en">
+Allows to run custom code following a promotion.  An application of this is to
+prevent fail-back of the master role after an initial failover.
+</longdesc>
+<shortdesc lang="en">Post promote script</shortdesc>
+<content type="string" default="" />
+</parameter>
+
 </parameters>
 
 <actions>
@@ -556,6 +566,7 @@ get_slave_info() {
             executed_gtid=`parse_slave_info Executed_Gtid_Set $tmpfile`
             slave_sql=`parse_slave_info Slave_SQL_Running $tmpfile`
             slave_io=`parse_slave_info Slave_IO_Running $tmpfile`
+            slave_io_state=`parse_slave_info Slave_IO_State $tmpfile`
             last_errno=`parse_slave_info Last_Errno $tmpfile`
             secs_behind=`parse_slave_info Seconds_Behind_Master $tmpfile`
             auto_position=`parse_slave_info Auto_Position $tmpfile`
@@ -614,8 +625,7 @@ check_slave() {
             ocf_log warn "MySQL Slave IO threads currently not running."
 
             # Sanity check, are we at least on the right master
-
-            if [ "$master_host" != "$new_master" ]; then
+            if [ "$master_host" != "$glb_cib_master" ]; then
                # Not pointing to the right master
                
                # Is this a recent master failover on the remote side
@@ -624,14 +634,40 @@ check_slave() {
                   # to remove the vip, doing nothing
                   :
                else				       
-				  set_reader_attr 0
-			   fi
+                  set_reader_attr 0
+               fi
 
                # try setting up the slave with the new master 
                set_master
                exit $OCF_SUCCESS
-            fi
 
+            elif [ "$slave_sql" == 'Yes' ]; then
+               # If the slq thread is running, it is an issue with the io thread
+               # let's try to restart it
+               
+               if [ "$slave_io_state" != "" ]; then
+                   # The io thread is running but is not connected, let's restart it.
+                   mysql_run -Q -sw $MYSQL $MYSQL_OPTIONS_REPL \
+                       -e "STOP SLAVE IO_THREAD"
+               fi
+               
+               # At this point, the io_thread should be stopped.
+               # let's try to start it again.
+               
+               mysql_run -Q -sw $MYSQL $MYSQL_OPTIONS_REPL \
+                   -e "START SLAVE IO_THREAD"
+               
+               # We give some time to connect
+               sleep 2
+               
+               get_slave_info
+               rc=$?
+               if [ $rc -eq 0 -a "$slave_io" == 'Yes' ]; then
+                   ocf_log info "MySQL Slave IO thread started succesfully."
+               else
+                   ocf_log warn "We could not start the MySQL Slave IO thread."
+               fi          
+            fi
         fi
 
         if [ "$slave_sql" != 'Yes' ]; then
@@ -739,82 +775,80 @@ set_master() {
    bootstrap_master=0
 
    if [ "$glb_master_exists" ]; then
-       if [ "${#glb_remote_info}" -gt "0" ]; then
-           # geo_remote_IP is defined, let's do the booth part
+      if [ "${#glb_remote_info}" -gt "0" ]; then
+         # geo_remote_IP is defined, let's do the booth part
         
-           if [ $glb_master_side -ne 0 ]; then
-               # this is _not_ the side with the token
-               new_master_info=`echo $glb_remote_info | awk '{ print $1 }'`
-               new_master=`echo $new_master_info | cut -d'|' -f1`
-               new_master_log_file=`echo $new_master_info | cut -d'|' -f2`
-               new_master_log_pos=`echo $new_master_info | cut -d'|' -f3`
-           fi
-        fi
+         if [ $glb_master_side -ne 0 ]; then
+            # this is _not_ the side with the token
+            new_master_info=`echo $glb_remote_info | awk '{ print $1 }'`
+            new_master=`echo $new_master_info | cut -d'|' -f1`
+            new_master_log_file=`echo $new_master_info | cut -d'|' -f2`
+            new_master_log_pos=`echo $new_master_info | cut -d'|' -f3`
+         fi
+      fi
 
-       if [ "${#new_master_info}" -eq "0" ]; then
-           new_master_info=`$CRM_ATTR_REPL_INFO --query  -q`
-	   # check if we have a master defined in crm
-    	   rc=$?
-           if [ $rc -ne 0 ]; then
-              # no REPL_INFO in crm yet, let's see if we have
-              # manually configured it earlier
-              bootstrap_master=1
-              ocf_log warn "No p_mysql_REPL_INFO configured yet, we plan to bootstrap a new master"
-           fi
-           new_master=`echo $new_master_info | cut -d'|' -f1`
-           new_master_log_file=`echo $new_master_info | cut -d'|' -f2`
-           new_master_log_pos=`echo $new_master_info | cut -d'|' -f3`
-       fi
-
-       # Keep replication position
-       get_slave_info
+      if [ "${#new_master_info}" -eq "0" ]; then
+         new_master_info=`$CRM_ATTR_REPL_INFO --query  -q`
+         # check if we have a master defined in crm
+    	 rc=$?
+         if [ $rc -ne 0 ]; then
+            # no REPL_INFO in crm yet, let's see if we have
+            # manually configured it earlier
+            bootstrap_master=1
+            ocf_log warn "No p_mysql_REPL_INFO configured yet, we plan to bootstrap a new master"
+         fi
+            new_master=`echo $new_master_info | cut -d'|' -f1`
+            new_master_log_file=`echo $new_master_info | cut -d'|' -f2`
+            new_master_log_pos=`echo $new_master_info | cut -d'|' -f3`
+      fi
+    
+      # Keep replication position
+      get_slave_info
  
-	# check if we have auto_position set to 1 as we use 5.6 
-        # and currently the only supported gtid method
-	# supported here
+      # check if we have auto_position set to 1 as we use 5.6 
+      # and currently the only supported gtid method
+      # supported here
     	
-    	if [ "$auto_position" == "0" ]; then
-    		ocf_log warn "Auto position is not enabled, we force it"
+      if [ "$auto_position" == "0" ]; then
+         ocf_log warn "Auto position is not enabled, we force it"
     		auto_position=",  MASTER_AUTO_POSITION = 1 "
     	else
     		auto_position=""
     	fi
-    			   
     
     	if [ "$master_log_file" -a "$new_master" = "$master_host" ]; then
-           #	master_params=", MASTER_LOG_FILE='$master_log_file', \
-           #	    MASTER_LOG_POS=$master_log_pos"
-           if [ "$1" = "nologging" ]; then
-               :
-           else
-               ocf_log info "Kept master pos for $master_host : $master_log_file:$master_log_pos"
-           fi
-           #return
-        else
-           if [ -n "$new_master_log_file" -a -n "$new_master_log_pos" ]; then
-               master_params=", MASTER_LOG_FILE='$new_master_log_file', \
-               MASTER_LOG_POS=$new_master_log_pos"
-               ocf_log info "Restored master pos for $new_master : $new_master_log_file:$new_master_log_pos"
-               ocf_log info "... but we don't care as 5.6"
-           fi
-        fi
+         #	master_params=", MASTER_LOG_FILE='$master_log_file', \
+         #	    MASTER_LOG_POS=$master_log_pos"
+         if [ "$1" = "nologging" ]; then
+             :
+         else
+             ocf_log info "Kept master pos for $master_host : $master_log_file:$master_log_pos"
+         fi
+         #return
+      else
+         if [ -n "$new_master_log_file" -a -n "$new_master_log_pos" ]; then
+            master_params=", MASTER_LOG_FILE='$new_master_log_file', \
+            MASTER_LOG_POS=$new_master_log_pos"
+            ocf_log info "Restored master pos for $new_master : $new_master_log_file:$new_master_log_pos"
+            ocf_log info "... but we don't care as 5.6"
+         fi
+      fi
 
-        # Informs the MySQL server of the master to replicate
-        # from. Accepts one mandatory argument which must contain the host
-        # name of the new master host. The master must either be unchanged
-        # from the laste master the slave replicated from, or freshly
-        # reset with RESET MASTER.
+      # Informs the MySQL server of the master to replicate
+      # from. Accepts one mandatory argument which must contain the host
+      # name of the new master host. The master must either be unchanged
+      # from the laste master the slave replicated from, or freshly
+      # reset with RESET MASTER.
 
-        if [ $bootstrap_master -eq 0 ]; then
-           mysql_run -Q -sw $MYSQL $MYSQL_OPTIONS_REPL \
-              -e "STOP SLAVE;CHANGE MASTER TO MASTER_HOST='$new_master', \
-              MASTER_PORT=$OCF_RESKEY_replication_port, \
-              MASTER_USER='$OCF_RESKEY_replication_user', \
-              MASTER_PASSWORD='$OCF_RESKEY_replication_passwd' \
-	      $auto_position \
-              $OCF_RESKEY_replication_options ;START SLAVE;"
-        #           $OCF_RESKEY_replication_options $master_params;START SLAVE;"
-        fi
+      if [ $bootstrap_master -eq 0 ]; then
+         mysql_run -Q -sw $MYSQL $MYSQL_OPTIONS_REPL \
+            -e "STOP SLAVE;CHANGE MASTER TO MASTER_HOST='$new_master', \
+            MASTER_PORT=$OCF_RESKEY_replication_port, \
+            MASTER_USER='$OCF_RESKEY_replication_user', \
+            MASTER_PASSWORD='$OCF_RESKEY_replication_passwd' \
+            $auto_position \
+            $OCF_RESKEY_replication_options ;START SLAVE;"
+      fi
    fi
 }
 
@@ -839,54 +873,64 @@ unset_master(){
 
     # At this point, the master is read only so there should not be much binlogs to transfer
     # Let's wait for the last bits
-    while true; do
-        mysql_run -Q -sw -O $MYSQL $MYSQL_OPTIONS_REPL \
-        -e 'SHOW PROCESSLIST\G' > $tmpfile
-        if grep -i 'Waiting for master to send event' $tmpfile >/dev/null; then
-            ocf_log info "MySQL slave has finished reading master binary log"
-            break
-        fi
-        if grep -i 'Reconnecting after a failed master event read' $tmpfile >/dev/null; then
-            ocf_log info "Master is down, no more binary logs to come"
-            break
-        fi
-        if grep -i 'Connecting to master' $tmpfile >/dev/null; then
-            ocf_log info "Master is down, no more binary logs to come"
-            break
-        fi
-        if ! grep 'system user' $tmpfile >/dev/null; then
-            ocf_log info "Slave is not running - not waiting to finish"
-            break
-        fi
+   while true; do
+      get_slave_info
+      rc=$?
+        
+      # Is the slave_io thread running?
+      if [ "$slave_io" != 'No' ]; then
+         ocf_log info "Slave IO thread not running, master likely dead or stopped"
+         break;
+      fi
+        
+      mysql_run -Q -sw -O $MYSQL $MYSQL_OPTIONS_REPL \
+         -e 'SHOW PROCESSLIST\G' > $tmpfile
+         
+      if grep -i 'Waiting for master to send event' $tmpfile >/dev/null; then
+         ocf_log info "MySQL slave has finished reading master binary log"
+         break
+      fi
+      if grep -i 'Reconnecting after a failed master event read' $tmpfile >/dev/null; then
+         ocf_log info "Master is down, no more binary logs to come"
+         break
+      fi
+      if grep -i 'Connecting to master' $tmpfile >/dev/null; then
+         ocf_log info "Master is down, no more binary logs to come"
+         break
+      fi
+      if ! grep 'system user' $tmpfile >/dev/null; then
+         ocf_log info "Slave is not running - not waiting to finish"
+         break
+      fi
 
-        sleep 1
-    done
+      sleep 1
+   done
 
-    # Now, stop the slave I/O thread and wait for relay log
-    # processing to complete
-    mysql_run -Q -sw $MYSQL $MYSQL_OPTIONS_REPL \
-        -e "STOP SLAVE IO_THREAD"
-    if [ $? -gt 0 ]; then
-        ocf_log err "Error stopping slave IO thread"
-        rm -f $tmpfile
-        exit $OCF_ERR_GENERIC
-    fi
+   # Now, stop the slave I/O thread and wait for relay log
+   # processing to complete
+   mysql_run -Q -sw $MYSQL $MYSQL_OPTIONS_REPL \
+      -e "STOP SLAVE IO_THREAD"
+   if [ $? -gt 0 ]; then
+      ocf_log err "Error stopping slave IO thread"
+      rm -f $tmpfile
+      exit $OCF_ERR_GENERIC
+   fi
 
-    while true; do
-        mysql_run -Q -sw $MYSQL $MYSQL_OPTIONS_REPL \
-            -e 'SHOW PROCESSLIST\G' > $tmpfile
-        if grep -i 'Has read all relay log' $tmpfile >/dev/null; then
-            ocf_log info "MySQL slave has finished processing relay log"
-            break
-        fi
-        if ! grep -q 'system user' $tmpfile; then
-            ocf_log info "Slave not runnig - not waiting to finish"
-            break
-        fi
-        ocf_log info "Waiting for MySQL slave to finish processing relay log"
-        sleep 1
-    done
-    rm -f $tmpfile
+   while true; do
+      mysql_run -Q -sw -O $MYSQL $MYSQL_OPTIONS_REPL \
+         -e 'SHOW PROCESSLIST\G' > $tmpfile
+      if grep -i 'Has read all relay log' $tmpfile >/dev/null; then
+         ocf_log info "MySQL slave has finished processing relay log"
+         break
+      fi
+      if ! grep -q 'system user' $tmpfile; then
+         ocf_log info "Slave not runnig - not waiting to finish"
+         break
+      fi
+      ocf_log info "Waiting for MySQL slave to finish processing relay log"
+      sleep 1
+   done
+   rm -f $tmpfile
 
     # Now, stop all slave activity and unset the master host
     mysql_run -Q -sw $MYSQL $MYSQL_OPTIONS_REPL \
@@ -972,19 +1016,22 @@ get_reader_attr() {
 
 # Stores data for MASTER STATUS from MySQL
 update_data_master_status() {
-
+   local server_uuid last_gtid
    master_status_file="${HA_RSCTMP}/master_status.${OCF_RESOURCE_INSTANCE}"
 
-   mysql_run -Q -sw -O $MYSQL $MYSQL_OPTIONS_REPL -e "SHOW MASTER STATUS\G" > $master_status_file
+   mysql_run -Q -sw -O $MYSQL $MYSQL_OPTIONS_REPL -e "select variable_name,replace(variable_value,'\n','') as variable_value from information_schema.global_variables where variable_name in ('server_uuid','gtid_executed')" > $master_status_file
+   
 }
 
-
-# Returns the specified value from the stored copy of SHOW MASTER STATUS.
+# Returns the master status from the global variable, namely the uuid and last_gtid.
 # should be call after update_data_master_status for tmpfile
-# Arguments:
-#  $1 The value to get.
 get_master_status() {
-   awk -v var="$1" '$1 == var ":" {print substr($0, index($0, ":") + 2)}' "$master_status_file"
+   local server_uuid last_gtid
+   
+   server_uuid=`cat $master_status_file | grep SERVER_UUID | awk '{ print $2 }'`
+   last_gtid=`cat $master_status_file | sed "s/.*$server_uuid:[0-9]*-\([0-9]*\).*/\1/"`
+
+   echo "$server_uuid:last_gtid"
 }
 
 # Determines what IP address is attached to the current host.  The output of the
@@ -997,7 +1044,7 @@ get_local_ip() {
    local IP
    IP=`$CRM_ATTR -l forever -n ${INSTANCE_ATTR_NAME}_mysql_master_IP -q -G`
    if [ ! $? -eq 0 ]; then
-     crm_node -n
+     uname -n
    else
       echo $IP
    fi
@@ -1094,7 +1141,11 @@ mysql_monitor() {
     local rc
     local status_loglevel="err"
     local master_resource
-
+    local master_status_attr
+    local new_master_status_attr
+    
+    : ${OCF_RESKEY_CRM_meta_interval=0}
+    
     # Set loglevel to info during probe
     if ocf_is_probe; then
         status_loglevel="info"
@@ -1122,6 +1173,21 @@ mysql_monitor() {
             rc=$?
             if [ $rc -eq 0 -o "$OCF_RESKEY_CRM_meta_role" = "Slave" ]; then
                 check_slave
+            else
+                update_data_master_status
+                master_status_attr=`$CRM_ATTR_REPL_STATUS --query  -q`
+                new_master_status_attr="$(get_master_status)"
+                rm -f $master_status_file
+                if [ "$master_status_attr" != "$new_master_status_attr" ]; then
+                    $CRM_ATTR_REPL_STATUS -v "$new_master_status_attr"
+                fi                
+            fi
+        else
+            is_slave
+            rc=$?
+            if [ $rc -eq 0 -o "$OCF_RESKEY_CRM_meta_role" = "Slave" ]; then
+                unset_master
+                set_reader_attr 0
             fi
         fi
 
@@ -1140,13 +1206,19 @@ mysql_monitor() {
         fi
     fi
 
+
     if ocf_is_ms && ! get_read_only; then
         ocf_log debug "MySQL monitor succeeded (master)";
+        if [ "$OCF_RESKEY_CRM_meta_interval" -eq "0" ]; then
+            # this is a probe and this server is a master so need to set master_score
+            $CRM_MASTER -v $((${OCF_RESKEY_max_slave_lag}+1000))
+        fi
         return $OCF_RUNNING_MASTER
     else
         ocf_log debug "MySQL monitor succeeded";
         return $OCF_SUCCESS
     fi
+
 }
 
 # Start MySQL in the master-slave context
@@ -1179,9 +1251,10 @@ mysql_start() {
         # node that is just joining the cluster, and the CRM may have
         # promoted a master before.
         
-        if [ "$glb_master_exists" -a "$glb_cib_master" != $(get_local_ip) ]; then
+        if [ "$glb_master_exists" -ne 0 -a "$glb_cib_master" != $(get_local_ip) ]; then
             ocf_log info "Changing MySQL configuration to replicate from $master_host."
             set_master
+            start_slave
             if [ $? -ne 0 ]; then
                 ocf_log err "Failed to start slave"
                 return $OCF_ERR_GENERIC
@@ -1328,6 +1401,9 @@ mysql_stop() {
     if [ -n "$OCF_RESKEY_CRM_meta_timeout" ]; then
         shutdown_timeout=$((($OCF_RESKEY_CRM_meta_timeout/1000)-5))
     fi
+    
+    #Normally, pacemaker handles timeout but here we want to be able to do
+    #a SIGKILL (-9) before the timeout occurs.    
     count=0
     while [ $count -lt $shutdown_timeout ]
     do
@@ -1377,9 +1453,10 @@ mysql_promote() {
 
     # A master can accept reads
     set_reader_attr 1
-
-    # A master can accept reads
-    set_reader_attr 1
+    
+    if [ "${#OCF_RESKEY_post_promote_script}" -gt "0" -a -x "${OCF_RESKEY_post_promote_script}" -a ! -L "${OCF_RESKEY_post_promote_script}" ]; then
+        ${OCF_RESKEY_post_promote_script}
+    fi  
 
     return $OCF_SUCCESS
 }
@@ -1411,7 +1488,59 @@ mysql_notify() {
 
     case "$type_op" in
         'pre-promote')
-            # Nothing to do now here, new replication info not yet published
+                        # Master-score is normally calculated from slave-lag but it is better to use
+            # binlog offset position to pick the most up to date slave
+            master_status_attr=`$CRM_ATTR_REPL_STATUS --query  -q`
+            
+            if [ $? -eq 0 ]; then
+                # There's a master status entry although we don't know if it is 
+                # a valid one
+                master_uuid=`echo $master_status_attr | cut -d: -f1`
+                last_gtid=`echo $master_status_attr | cut -d: -f2`
+            
+                slave_status_file="${HA_RSCTMP}/slave_nofiy.${OCF_RESOURCE_INSTANCE}"
+
+                mysql_run -Q -sw -O $MYSQL $MYSQL_OPTIONS_REPL -e "select variable_name,replace(variable_value,'\n','') as variable_value from information_schema.global_variables where variable_name in ('gtid_executed')" > $slave_status_file
+                
+               if [ $? -eq 0 ]; then
+                  # We'll be here only if the master crashed. In the event of 
+					   # a graceful demote, a post-demote notification event would have occurred.
+					   # The post-demote include an unset-master that 
+					   # resets the slave after the completion of the IO and SQL
+					   # threads.  The post-demote doesn't run if the master host
+					   # crashed.
+				
+					    # Let's establish the master score based on the following
+					    # rule.
+					    # score = executed_gtid - last_gtid
+					    #
+                   
+                   executed_gtid=`cat $slave_status_file | sed "s/.*$master_uuid:[0-9]*-\([0-9]*\).*/\1/"`
+  					   
+					    # Since the master publishes its status only once per few
+					    # seconds, executed_gtid - last_gtid is likely positive.
+					    # We'll cap all values to int signed range et target
+					    # 1B as the value if a slave is fully in sync with the master
+                   
+						 master_score=$((1000000000+$executed_gtid-$last_gtid))
+					
+					    # now, the caps, the upper cap is unlikely
+					    if [ $master_score -gt 2147483647 ]; then
+                      master_score=2147483647
+					    fi
+					
+					    # the lower cap could happened if a slave lags behind by
+					    # more then 30GB of binlog. In that case... do we really care
+					    # if we floor the value
+					
+					if [ $master_score -lt -2147483647 ]; then
+                  master_score=-2147483647
+					fi
+					
+					$CRM_MASTER -v $master_score 
+
+				fi
+			fi
 
         ;;
         'post-promote')
@@ -1554,7 +1683,7 @@ mysql_run() {
         outputfile=`mktemp ${HA_RSCTMP}/mysql_run.${OCF_RESOURCE_INSTANCE}.XXXXXX`
         error=`"$@" 2>&1 1>$outputfile`
         rc=$?
-        if [ "suppress_56_password_warning" ]; then
+        if [ "suppress_56_password_warning" -eq 1 ]; then
                 error=`echo "$error" | egrep -v '^Warning: Using a password on the command line'`
         fi
         output=`cat $outputfile`
@@ -1622,6 +1751,11 @@ case "$1" in
         exit $OCF_SUCCESS;;
 esac
 
+if [ "$#" -lt "1" ]; then
+    usage
+    exit $OCF_SUCCESS
+fi
+
 mysql_validate
 rc=$?
 LSB_STATUS_STOPPED=3
@@ -1636,7 +1770,19 @@ fi
 
 #Global info missing from OCF_RESKEY
 resources=`$CRM_RES --list`
-glb_master_resource=`echo "$resources" | grep $INSTANCE_ATTR_NAME | awk '{print $3}' | head -n 1`
+# now we need the master-slave clone set name, need to walk around limitations
+# of older pacemaker
+if [[ "$OCF_RESKEY_crm_feature_set" > "3.0.1" ]]; then
+    glb_master_resource=`echo "$resources" | grep $INSTANCE_ATTR_NAME | awk '{print $3}' | head -n 1`
+else
+    # older versions of Pacemaker don't write the primitive name in the resources list
+    for msr in `echo "$resources" | grep 'Master/Slave' | awk '{print $3}'`; do
+        isThere=`$CRM_RES -q -r $msr | grep primitive | grep -c $INSTANCE_ATTR_NAME`
+        if [ "$isThere" -gt "0" ]; then
+            glb_master_resource=$msr
+        fi
+    done
+fi
 is_master_side
 glb_master_side=$?
 if [ "${#OCF_RESKEY_geo_remote_IP}" -gt "0" -a $glb_master_side -ne 0 ]; then
