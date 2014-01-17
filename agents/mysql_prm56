@@ -12,6 +12,7 @@
 #           Narayan Newton:               add Gentoo/Debian defaults
 #           Marian Marinov, Florian Haas: add replication capability
 #           Yves Trudeau, Baron Schwartz: add VIP support and improve replication
+#           Frédéric Descamps:            initial support for 5.6 GTID
 #
 # Support:  linux-ha@lists.linux-ha.org
 # License:  GNU General Public License (GPL)
@@ -22,7 +23,7 @@
 # An example usage in /etc/ha.d/haresources:
 #       node1  10.0.0.170 mysql
 #
-# Version: 20140115165117
+# Version: 20140117100403
 #
 # See usage() function below for more details...
 #
