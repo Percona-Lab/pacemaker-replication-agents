@@ -17,6 +17,9 @@ all: $(TARGETS)
 prm_binlog_parser: prm_binlog_parser.c libybinlogp.c ybinlogp.h
 	gcc $(CFLAGS) prm_binlog_parser.c libybinlogp.c -o $@ $(LDFLAGS)
 
+ybinlogp: ybinlogp.c libybinlogp.c ybinlogp.h
+	gcc $(CFLAGS) ybinlogp.c libybinlogp.c -o $@ $(LDFLAGS)
+
 #libybinlogp.so: libybinlogp.so.1
 #	ln -fs $< $@
 

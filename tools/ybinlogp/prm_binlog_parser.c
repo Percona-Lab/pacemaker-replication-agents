@@ -51,44 +51,21 @@ int main(int argc, char** argv) {
 	int fd;
 	struct ybp_binlog_parser* bp;
 	struct ybp_event* evbuf;
-	long starting_offset = -1;
-	long starting_time = -1;
+	off64_t starting_offset = -1;
 	int num_to_show = 2;
-	int show_all = false;
-	bool q_mode = false;
+	int show_all = true;
+	bool q_mode = true;
 	bool esi = true;
 	char* database_limit = NULL;
-    int debug = 0;
+	int debug = 0;
     
-	while ((opt = getopt(argc, argv, "ho:t:a:D:qE")) != -1) {
+	while ((opt = getopt(argc, argv, "ho:")) != -1) {
 		switch (opt) {
 			case 'h':
 				usage();
 				return 0;
 			case 'o':      /* Offset mode */
-				starting_offset = atoll(optarg);
-				break;
-			case 'E':
-				esi = false;
-				break;
-			case 't':      /* Time mode */
-				starting_time = atoll(optarg);
-				break;
-			case 'a':
-				if (strncmp(optarg, "all", 3) == 0) {
-					num_to_show = 2;
-					show_all = 1;
-					break;
-				}
-				num_to_show = atoi(optarg);
-				if (num_to_show < 1)
-					num_to_show = 1;
-				break;
-			case 'D':
-				database_limit = strdup(optarg);
-				break;
-			case 'q':
-				q_mode = true;
+				starting_offset = strtoll(optarg,NULL,10);
 				break;
 			case '?':
 				fprintf(stderr, "Unknown argument %c\n", optopt);
@@ -115,50 +92,28 @@ int main(int argc, char** argv) {
 		return 1;
 	}
 	ybp_init_event(evbuf);
-	if (starting_offset >= 0) {
-		off64_t offset = ybp_nearest_offset(bp, starting_offset);
-		if (offset == -2) {
-			fprintf(stderr, "Unable to find anything after offset %ld\n", starting_offset);
-			return 1;
-		}
-		else if (offset == -1) {
-			perror("nearest_offset");
-			return 1;
-		}
-		else {
-			ybp_rewind_bp(bp, offset);
-		}
-	}
-	if (starting_time >= 0) {
-		off64_t offset = ybp_nearest_time(bp, starting_time);
-		if (offset == -2) {
-			fprintf(stderr, "Unable to find anything after time %ld\n", starting_time);
-			return 1;
-		}
-		else if (offset == -1) {
-			perror("nearest_time");
-			return 1;
-		}
-		else {
-			ybp_rewind_bp(bp, offset);
-		}
-	}
 	int i = 0;
-    struct ybp_xid_event* x;
-    struct ybp_query_event_safe* s;
-    MD5_CTX c; 
-    int n;
-    unsigned char out[MD5_DIGEST_LENGTH];
-    char* cptr;
-    uint32_t	next_position=4;
-    MD5_Init(&c);
+	struct ybp_xid_event* x;
+	struct ybp_query_event_safe* s;
+	MD5_CTX c; 
+	unsigned int n;
+	unsigned char out[MD5_DIGEST_LENGTH];
+	char* cptr;
+	uint32_t next_position=4;
+	MD5_Init(&c);
 	while ((ybp_next_event(bp, evbuf) >= 0) && (show_all || i < num_to_show)) {
-		if (q_mode) {
-            switch (evbuf->type_code) {
-                
+	    if (q_mode) {
+	    	if (debug) printf("type_code: %i pos=%llu\n",evbuf->type_code,(long long unsigned int) evbuf->offset);
+		if (starting_offset > 0 && starting_offset > evbuf->offset) { 
+			if (debug) printf("continuing %llu > %llu\n",(long long unsigned int) starting_offset, (long long unsigned int) evbuf->offset); 
+			next_position=evbuf->offset;
+			continue; 
+		}
+            	switch (evbuf->type_code) {
+		              
                 case QUERY_EVENT:
                     s = ybp_event_to_safe_qe(evbuf);
-                    MD5_Update(&c, &evbuf->timestamp, 4); if (debug) { cptr=&evbuf->timestamp; for(n=0; n<4; n++)  printf("%hhX", cptr[n]); }
+                    MD5_Update(&c, &evbuf->timestamp, 4); if (debug) { cptr= (char *) &evbuf->timestamp; for(n=0; n<4; n++)  printf("%hhX", cptr[n]); }
                     MD5_Update(&c, s->statement, s->statement_len); if (debug) { printf(" | ");cptr=s->statement; for(n=0; n < s->statement_len; n++)  printf("%hhX", cptr[n]); printf(" "); }
                     ybp_dispose_safe_qe(s);
                     break;
@@ -166,7 +121,7 @@ int main(int argc, char** argv) {
                 case WRITE_ROWS_EVENT:
                 case UPDATE_ROWS_EVENT:
                 case DELETE_ROWS_EVENT:
-					if (debug) { printf("ts=%d type=%i len=%d\n", evbuf->timestamp, evbuf->type_code, event_data_len(evbuf)); }
+		    if (debug) { printf("ts=%d type=%i len=%d\n", evbuf->timestamp, evbuf->type_code, event_data_len(evbuf)); }
                     cptr = evbuf->data + 4; /* skipping table id not consistent across node */ 
                     MD5_Update(&c, cptr, event_data_len(evbuf) - 4); if (debug) { for(n=0; n < event_data_len(evbuf) - 4; n++)  printf("%hhX", cptr[n]); printf(" "); }
                     break;
@@ -178,19 +133,22 @@ int main(int argc, char** argv) {
                 case APPEND_BLOCK_EVENT:
                 case EXECUTE_LOAD_QUERY_EVENT:
                 case DELETE_FILE_EVENT:
-					if (debug) { printf("ts=%d type=%i len=%d\n", evbuf->timestamp, evbuf->type_code, event_data_len(evbuf)); }
+			if (debug) { printf("ts=%d type=%i len=%d\n", evbuf->timestamp, evbuf->type_code, event_data_len(evbuf)); }
                     MD5_Update(&c, evbuf->data, event_data_len(evbuf)); if (debug) { cptr=evbuf->data; for(n=0; n < event_data_len(evbuf); n++)  printf("%hhX", cptr[n]); printf(" ");}
                     break;
                     
                 case XID_EVENT:
-                    x = ybp_event_to_safe_xe(evbuf);
-                    printf("ts=%d XID=%llu pos=%llu md5=", evbuf->timestamp, (long long unsigned)x->id, next_position);
-                    next_position = evbuf->offset + evbuf->length;
-                    MD5_Final(out, &c);
-                    for(n=0; n<MD5_DIGEST_LENGTH; n++)  printf("%hhX", out[n]);
-                    printf("\n");
-                    MD5_Init(&c);
-                    ybp_dispose_safe_xe(x);
+		    if (!(starting_offset > 0 && next_position == 4)) {
+                    	    x = ybp_event_to_safe_xe(evbuf);
+	                    /* printf("ts=%d XID=%llu pos=%llu md5=", evbuf->timestamp, (long long unsigned)x->id,(long long unsigned) next_position);*/
+	                    printf("%llu,",(long long unsigned) next_position);
+	                    next_position = evbuf->offset + evbuf->length;
+        	            MD5_Final(out, &c);
+                	    for(n=0; n<MD5_DIGEST_LENGTH; n++)  printf("%hhX", out[n]);
+	                    printf("\n");
+        	            MD5_Init(&c);
+                    	    ybp_dispose_safe_xe(x);
+		    }
                     break;
                     
                 default:

@@ -20,14 +20,14 @@
 
 struct ybp_binlog_parser {
 	int			fd;
-	off_t		file_size;
-	ssize_t		offset;
+	uint32_t		file_size;
+	uint32_t		offset;
 	bool		enforce_server_id;
 	bool		has_read_fde;
 	uint32_t	slave_server_id;
 	uint32_t	master_server_id;
-	time_t		min_timestamp;
-	time_t		max_timestamp;
+	uint32_t	min_timestamp;
+	uint32_t	max_timestamp;
 };
 
 enum ybp_event_types {

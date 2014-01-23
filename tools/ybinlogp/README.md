@@ -5,7 +5,17 @@ A tool to help the PRM MySQL replication to recover data when there's a failover
 The aim is to provide a behavior similar to MHA.  The tool derives directly from 
 ybinlogp developped by Yelp.  Original README is below.
 
-prm_binlog_parser adds 
+prm_binlog_parser output offset and md5 of trx data on xid boundary. To compile it
+you need libssl which is provided by libssl-dev on Debian/Ubuntu and by openssl-devel
+on Redhat/Centos.
+
+To build:
+
+make prm_binlog_parser
+
+Make sure you put the binary in the execution path, The PRM agent will need to find
+it.
+
 Yves Trudeau, Principal consultant, Percona LLC.
 April 2013
 
