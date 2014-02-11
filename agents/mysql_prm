@@ -22,7 +22,9 @@
 # An example usage in /etc/ha.d/haresources:
 #       node1  10.0.0.170 mysql
 #
-# Version: 20140116112303
+# Version: 20140211144820
+#
+# vim:set ts=3 sw=3 sts=3 expandtab:
 #
 # See usage() function below for more details...
 #
@@ -30,8 +32,7 @@
 #   OCF_RESKEY_binary
 #   OCF_RESKEY_client_binary
 #   OCF_RESKEY_config
-#   OCF_RESKEY_datadir
-#   OCF_RESKEY_user
+#   OCF_RESKEY_config_extra_section
 #   OCF_RESKEY_group
 #   OCF_RESKEY_test_table
 #   OCF_RESKEY_test_user
@@ -39,8 +40,6 @@
 #   OCF_RESKEY_enable_creation
 #   OCF_RESKEY_additional_parameters
 #   OCF_RESKEY_log
-#   OCF_RESKEY_pid
-#   OCF_RESKEY_socket
 #   OCF_RESKEY_replication_user
 #   OCF_RESKEY_replication_passwd
 #   OCF_RESKEY_replication_port
@@ -66,27 +65,21 @@ HOSTOS=`uname`
 if [ "X${HOSTOS}" = "XOpenBSD" ];then
    OCF_RESKEY_binary_default="/usr/local/bin/mysqld_safe"
    OCF_RESKEY_config_default="/etc/my.cnf"
-   OCF_RESKEY_datadir_default="/var/mysql"
-   OCF_RESKEY_user_default="_mysql"
    OCF_RESKEY_group_default="_mysql"
    OCF_RESKEY_log_default="/var/log/mysqld.log"
-   OCF_RESKEY_pid_default="/var/mysql/mysqld.pid"
-   OCF_RESKEY_socket_default="/var/run/mysql/mysql.sock"
 else
    OCF_RESKEY_binary_default="/usr/bin/safe_mysqld"
    OCF_RESKEY_config_default="/etc/my.cnf"
-   OCF_RESKEY_datadir_default="/var/lib/mysql"
-   OCF_RESKEY_user_default="mysql"
    OCF_RESKEY_group_default="mysql"
    OCF_RESKEY_log_default="/var/log/mysqld.log"
-   OCF_RESKEY_pid_default="/var/run/mysql/mysqld.pid"
-   OCF_RESKEY_socket_default="/var/lib/mysql/mysql.sock"
 fi
 OCF_RESKEY_client_binary_default="mysql"
+OCF_RESKEY_config_extra_section_default=""
 OCF_RESKEY_test_user_default="root"
 OCF_RESKEY_test_table_default="mysql.user"
 OCF_RESKEY_test_passwd_default=""
 OCF_RESKEY_enable_creation_default=0
+OCF_RESKEY_additional_parameters_default=""
 OCF_RESKEY_additional_parameters_default=""
 OCF_RESKEY_replication_port_default="3306"
 OCF_RESKEY_max_slave_lag_default="3600"
@@ -102,14 +95,11 @@ MYSQL_BINDIR=`dirname ${OCF_RESKEY_binary}`
 : ${OCF_RESKEY_client_binary=${OCF_RESKEY_client_binary_default}}
 
 : ${OCF_RESKEY_config=${OCF_RESKEY_config_default}}
-: ${OCF_RESKEY_datadir=${OCF_RESKEY_datadir_default}}
+: ${OCF_RESKEY_config_extra_section=${OCF_RESKEY_config_extra_section_default}}
 
-: ${OCF_RESKEY_user=${OCF_RESKEY_user_default}}
 : ${OCF_RESKEY_group=${OCF_RESKEY_group_default}}
 
 : ${OCF_RESKEY_log=${OCF_RESKEY_log_default}}
-: ${OCF_RESKEY_pid=${OCF_RESKEY_pid_default}}
-: ${OCF_RESKEY_socket=${OCF_RESKEY_socket_default}}
 
 : ${OCF_RESKEY_test_user=${OCF_RESKEY_test_user_default}}
 : ${OCF_RESKEY_test_table=${OCF_RESKEY_test_table_default}}
@@ -138,9 +128,37 @@ MYSQL_BINDIR=`dirname ${OCF_RESKEY_binary}`
 #######################################################################
 # Convenience variables
 
-MYSQL=$OCF_RESKEY_client_binary
+MYSQL=`which $OCF_RESKEY_client_binary`
+MY_PRINT_DEFAULTS=`which my_print_defaults`
 
-MYSQL_OPTIONS_LOCAL="-A -S $OCF_RESKEY_socket --connect_timeout=10"
+if [ "$?" -ne "0" ]; then
+    # my_print_defaults not in path
+    BASEDIR=`dirname $MYSQL`
+    MY_PRINT_DEFAULTS="${BASEDIR}/my_print_defaults"
+fi
+
+# TODO: All the glb_mycnf stuff requires bash 4.0+ (el5 is 3.2.5). Will need to validate
+#Let's read the Mysql configuration, first declare assoc. array.
+declare -A glb_mycnf
+
+#Load the defaults from mysqld
+for param in `$OCF_RESKEY_binary --print-defaults | tail -n 1`; do
+    glb_mycnf[`echo $param | cut -d'=' -f1`]=`echo $param | cut -d'=' -f1`
+done
+
+#Load [mysqld] section
+for param in `my_print_defaults -c $OCF_RESKEY_config mysqld`; do
+   glb_mycnf[`echo $param | cut -d'=' -f1`]=`echo $param | cut -d'=' -f1`
+done
+
+#If there an extra_section load it on top
+if [ ! -z "$OCF_RESKEY_config_extra_section" ]; then
+   for param in `my_print_defaults -c $OCF_RESKEY_config $OCF_RESKEY_config_extra_section`; do
+      glb_mycnf[`echo $param | cut -d'=' -f1`]=`echo $param | cut -d'=' -f1`
+   done
+fi
+
+MYSQL_OPTIONS_LOCAL="-A -S ${glb_mycnf['--socket']} --connect_timeout=10"
 MYSQL_OPTIONS_REPL="$MYSQL_OPTIONS_LOCAL --user=$OCF_RESKEY_replication_user --password=$OCF_RESKEY_replication_passwd"
 MYSQL_OPTIONS_TEST="$MYSQL_OPTIONS_LOCAL --user=$OCF_RESKEY_test_user --password=$OCF_RESKEY_test_passwd"
 MYSQL_LAST_ERR=0
@@ -223,12 +241,16 @@ Configuration file
 <content type="string" default="${OCF_RESKEY_config_default}" />
 </parameter>
 
-<parameter name="datadir" unique="0" required="0">
+<parameter name="extra_section" unique="0" required="0">
 <longdesc lang="en">
-Directory containing databases
+Extra section to consider for the configuration in addition to [mysqld].  This is
+useful for mysqld_multi type configuration file. Multiple sections can be entered 
+separated by spaces.  Any parameters in these extra sections overrides the ones 
+defined in [mysqld]. Note that the my_print_defaults utility is expected to be 
+either in the path or in the same directory as the mysql client.
 </longdesc>
-<shortdesc lang="en">MySQL datadir</shortdesc>
-<content type="string" default="${OCF_RESKEY_datadir_default}" />
+<shortdesc lang="en">MySQL config extra_section</shortdesc>
+<content type="string" default="${OCF_RESKEY_extra_section_default}" />
 </parameter>
 
 <parameter name="user" unique="0" required="0">
@@ -253,22 +275,6 @@ The logfile to be used for mysqld.
 </longdesc>
 <shortdesc lang="en">MySQL log file</shortdesc>
 <content type="string" default="${OCF_RESKEY_log_default}"/>
-</parameter>
-
-<parameter name="pid" unique="0" required="0">
-<longdesc lang="en">
-The pidfile to be used for mysqld.
-</longdesc>
-<shortdesc lang="en">MySQL pid file</shortdesc>
-<content type="string" default="${OCF_RESKEY_pid_default}"/>
-</parameter>
-
-<parameter name="socket" unique="0" required="0">
-<longdesc lang="en">
-The socket to be used for mysqld.
-</longdesc>
-<shortdesc lang="en">MySQL socket</shortdesc>
-<content type="string" default="${OCF_RESKEY_socket_default}"/>
 </parameter>
 
 <parameter name="test_table" unique="0" required="0">
@@ -1061,14 +1067,14 @@ mysql_validate() {
       return $OCF_ERR_INSTALLED;
    fi
    
-   if [ ! -d $OCF_RESKEY_datadir ]; then
-      ocf_log err "Datadir $OCF_RESKEY_datadir doesn't exist";
+   if [ ! -d ${glb_config['--datadir']} ]; then
+      ocf_log err "Datadir ${glb_config['--datadir']} doesn't exist";
       return $OCF_ERR_INSTALLED;
    fi
    
-   getent passwd $OCF_RESKEY_user >/dev/null 2>&1
+   getent passwd ${glb_config['--user']} >/dev/null 2>&1
    if [ ! $? -eq 0 ]; then
-      ocf_log err "User $OCF_RESKEY_user doesn't exit";
+      ocf_log err "User ${glb_config['--user']} doesn't exit";
       return $OCF_ERR_INSTALLED;
    fi
    
@@ -1084,12 +1090,12 @@ mysql_validate() {
 mysql_status() {
    local last_restart_ts
    
-   if [ ! -e $OCF_RESKEY_pid ]; then
+   if [ ! -e ${glb_config['--pid-file']} ]; then
       ocf_log $1 "MySQL is not running"
       return $OCF_NOT_RUNNING;
    fi
    
-   pid=`cat $OCF_RESKEY_pid`;
+   pid=`cat ${glb_config['--pid-file']}`;
    if [ -d /proc -a -d /proc/1 ]; then
       [ "u$pid" != "u" -a -d /proc/$pid ]
    else
@@ -1100,12 +1106,12 @@ mysql_status() {
       return $OCF_SUCCESS;
    else
       ocf_log $1 "MySQL not running: removing old PID file"
-      rm -f $OCF_RESKEY_pid
+      rm -f ${glb_config['--pid-file']}
       
       # This is abnormal, is this host the master defined in the cib?
       # Also confirm it succeed in starting with the socket file
       if [ "$glb_master_exists" -eq "1" ]; then
-         if [ "$glb_cib_master" =  $(get_local_ip) -a -e "$OCF_RESKEY_socket" ]; then
+         if [ "$glb_cib_master" =  $(get_local_ip) -a -e "${glb_config['--socket']}" ]; then
             # This is the master, let's give it a change to restart
             # that will allow the slaves a better chance to sync but we
             # need to avoid letting it restart forever.  Has it tried to
@@ -1287,41 +1293,41 @@ mysql_start() {
 # low level MySQL start
 mysql_start_low() {
    touch $OCF_RESKEY_log
-   chown $OCF_RESKEY_user:$OCF_RESKEY_group $OCF_RESKEY_log
+   chown ${glb_config['--user']}:$OCF_RESKEY_group $OCF_RESKEY_log
    chmod 0640 $OCF_RESKEY_log
    [ -x /sbin/restorecon ] && /sbin/restorecon $OCF_RESKEY_log
    
-   if ocf_is_true "$OCF_RESKEY_enable_creation" && [ ! -d $OCF_RESKEY_datadir/mysql ] ; then
+   if ocf_is_true "$OCF_RESKEY_enable_creation" && [ ! -d ${glb_config['--datadir']}/mysql ] ; then
       ocf_log info "Initializing MySQL database: "
-      $MYSQL_BINDIR/mysql_install_db --datadir=$OCF_RESKEY_datadir
+      $MYSQL_BINDIR/mysql_install_db --datadir=${glb_config['--datadir']}
       rc=$?
       if [ $rc -ne 0 ] ; then
          ocf_log err "Initialization failed: $rc";
          exit $OCF_ERR_GENERIC
       fi
-      chown -R $OCF_RESKEY_user:$OCF_RESKEY_group $OCF_RESKEY_datadir
+      chown -R ${glb_config['--user']}:$OCF_RESKEY_group ${glb_config['--datadir']}
    fi
    
-   pid_dir=`dirname $OCF_RESKEY_pid`
+   pid_dir=`dirname ${glb_config['--pid-file']}`
    if [ ! -d $pid_dir ] ; then
       ocf_log info "Creating PID dir: $pid_dir"
       mkdir -p $pid_dir
-      chown $OCF_RESKEY_user:$OCF_RESKEY_group $pid_dir
+      chown ${glb_config['--user']}:$OCF_RESKEY_group $pid_dir
    fi
    
-   socket_dir=`dirname $OCF_RESKEY_socket`
+   socket_dir=`dirname ${glb_config['--socket']}`
    if [ ! -d $socket_dir ] ; then
       ocf_log info "Creating socket dir: $socket_dir"
       mkdir -p $socket_dir
-      chown $OCF_RESKEY_user:$OCF_RESKEY_group $socket_dir
+      chown ${glb_config['--user']}:$OCF_RESKEY_group $socket_dir
    fi
    
    # Regardless of whether we just created the directory or it
    # already existed, check whether it is writable by the configured
    # user
    for dir in $pid_dir $socket_dir; do
-      if ! su -s /bin/sh - $OCF_RESKEY_user -c "test -w $dir"; then
-         ocf_log err "Directory $dir is not writable by $OCF_RESKEY_user"
+      if ! su -s /bin/sh - ${glb_config['--user']} -c "test -w $dir"; then
+         ocf_log err "Directory $dir is not writable by ${glb_config['--user']}"
          exit $OCF_ERR_PERM;
       fi
    done
@@ -1329,20 +1335,18 @@ mysql_start_low() {
    # Uncomment to perform permission clensing
    # - not convinced this should be enabled by default
    #
-   #chmod 0755 $OCF_RESKEY_datadir
-   #chown -R $OCF_RESKEY_user $OCF_RESKEY_datadir
-   #chgrp -R $OCF_RESKEY_group $OCF_RESKEY_datadir
-   mysql_extra_params=
+   #chmod 0755 ${glb_config['--datadir']}
+   #chown -R ${glb_config['--user']} ${glb_config['--datadir']}
+   #chgrp -R $OCF_RESKEY_group ${glb_config['--datadir']}
+   mysql_params=
+   for k in "${!glb_mycnf[@]}"; do
+      mysql_params="$mysql_params $k=${glb_config[$k]}"
+   done 
    if ocf_is_ms; then
-      mysql_extra_params="$mysql_extra_params --skip-slave-start --read-only"
+      mysql_params="$mysql_params --skip-slave-start --read-only"
    fi
    
-   ${OCF_RESKEY_binary} --defaults-file=$OCF_RESKEY_config \
-   --pid-file=$OCF_RESKEY_pid \
-   --socket=$OCF_RESKEY_socket \
-   --datadir=$OCF_RESKEY_datadir \
-   --user=$OCF_RESKEY_user $OCF_RESKEY_additional_parameters \
-   $mysql_extra_params >/dev/null 2>&1 &
+   ${OCF_RESKEY_binary} $mysql_params >/dev/null 2>&1 &
    rc=$?
    
    if [ $rc != 0 ]; then
@@ -1379,12 +1383,12 @@ mysql_stop() {
       set_reader_attr 0
    fi
    
-   if [ ! -f $OCF_RESKEY_pid ]; then
+   if [ ! -f ${glb_config['--pid-file']} ]; then
       ocf_log info "MySQL is not running"
       return $OCF_SUCCESS
    fi
    
-   pid=`cat $OCF_RESKEY_pid 2> /dev/null `
+   pid=`cat ${glb_config['--pid-file']} 2> /dev/null `
    /bin/kill $pid > /dev/null
    rc=$?
    if [ $rc != 0 ]; then
@@ -1420,7 +1424,7 @@ mysql_stop() {
    
    ocf_log info "MySQL stopped";
    rm -f /var/lock/subsys/mysqld
-   rm -f $OCF_RESKEY_socket
+   rm -f ${glb_config['--socket']}
    return $OCF_SUCCESS
 }
 
