@@ -22,7 +22,7 @@
 # An example usage in /etc/ha.d/haresources:
 #       node1  10.0.0.170 mysql
 #
-# Version: 20140211161541
+# Version: 20140211162610
 #
 # vim:set ts=3 sw=3 sts=3 expandtab:
 #
@@ -1217,7 +1217,7 @@ mysql_start_low() {
    mysql_params=
    for k in "${!glb_mycnf[@]}"; do
       if [ -z "${glb_mycnf[$k]}" ]; then
-         mysql_params="$mysql_params $k"
+         mysql_params="$mysql_params $k "
       else
          mysql_params="$mysql_params $k=${glb_mycnf[$k]}"
       fi
@@ -1653,7 +1653,7 @@ else
    OCF_RESKEY_log_default="/var/log/mysqld.log"
 fi
 OCF_RESKEY_client_binary_default="mysql"
-OCF_RESKEY_config_extra_section_default=""
+OCF_RESKEY_extra_section_default=""
 OCF_RESKEY_test_user_default="root"
 OCF_RESKEY_test_table_default="mysql.user"
 OCF_RESKEY_test_passwd_default=""
@@ -1674,7 +1674,7 @@ MYSQL_BINDIR=`dirname ${OCF_RESKEY_binary}`
 : ${OCF_RESKEY_client_binary=${OCF_RESKEY_client_binary_default}}
 
 : ${OCF_RESKEY_config=${OCF_RESKEY_config_default}}
-: ${OCF_RESKEY_config_extra_section=${OCF_RESKEY_config_extra_section_default}}
+: ${OCF_RESKEY_extra_section=${OCF_RESKEY_extra_section_default}}
 
 : ${OCF_RESKEY_group=${OCF_RESKEY_group_default}}
 
@@ -1726,8 +1726,8 @@ for param in `my_print_defaults -c $OCF_RESKEY_config mysqld`; do
 done
 
 #If there an extra_section load it on top
-if [ ! -z "$OCF_RESKEY_config_extra_section" ]; then
-   for param in `my_print_defaults -c $OCF_RESKEY_config $OCF_RESKEY_config_extra_section`; do
+if [ ! -z "$OCF_RESKEY_extra_section" ]; then
+   for param in `my_print_defaults -c $OCF_RESKEY_config $OCF_RESKEY_extra_section`; do
       glb_mycnf[`echo $param | cut -d'=' -f1`]=`echo $param | cut -d'=' -f2`
    done
 fi
@@ -1749,9 +1749,6 @@ fi
 if [ -z "${glb_mycnf['--pid-file']}" ]; then
     glb_mycnf['--pid-file']=`$OCF_RESKEY_binary --verbose --help | grep -e '^pid-file' --user=${glb_mycnf['--user']} | awk '{ print $2 }'`
 fi
-
-
-
 
 MYSQL_OPTIONS_LOCAL="-A -S ${glb_mycnf['--socket']} --connect_timeout=10"
 MYSQL_OPTIONS_REPL="$MYSQL_OPTIONS_LOCAL --user=$OCF_RESKEY_replication_user --password=$OCF_RESKEY_replication_passwd"
