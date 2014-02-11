@@ -22,7 +22,7 @@
 # An example usage in /etc/ha.d/haresources:
 #       node1  10.0.0.170 mysql
 #
-# Version: 20140211160904
+# Version: 20140211161541
 #
 # vim:set ts=3 sw=3 sts=3 expandtab:
 #
@@ -1733,22 +1733,24 @@ if [ ! -z "$OCF_RESKEY_config_extra_section" ]; then
 fi
 
 # Double check what we absolutely need
+if [ -z "${glb_mycnf['--user']}" ]; then
+    # not given by mysqld so defaulting to mysql
+    glb_mycnf['--user']='mysql'
+fi
+
 if [ -z "${glb_mycnf['--socket']}" ]; then
-    glb_mycnf['--socket']=`$OCF_RESKEY_binary --verbose --help | grep -e '^socket' | awk '{ print $2 }'`
+    glb_mycnf['--socket']=`$OCF_RESKEY_binary --verbose --help --user=${glb_mycnf['--user']} | grep -e '^socket' | awk '{ print $2 }'`
 fi
 
 if [ -z "${glb_mycnf['--datadir']}" ]; then
-    glb_mycnf['--datadir']=`$OCF_RESKEY_binary --verbose --help | grep -e '^datadir' | awk '{ print $2 }'`
+    glb_mycnf['--datadir']=`$OCF_RESKEY_binary --verbose --help --user=${glb_mycnf['--user']} | grep -e '^datadir' | awk '{ print $2 }'`
 fi
 
 if [ -z "${glb_mycnf['--pid-file']}" ]; then
-    glb_mycnf['--pid-file']=`$OCF_RESKEY_binary --verbose --help | grep -e '^pid-file' | awk '{ print $2 }'`
+    glb_mycnf['--pid-file']=`$OCF_RESKEY_binary --verbose --help | grep -e '^pid-file' --user=${glb_mycnf['--user']} | awk '{ print $2 }'`
 fi
 
-if [ -z "${glb_mycnf['--user']}" ]; then
-    # not given by mysqld so defaulting to mysql
-    glb_mycnf['--pid-file']='mysql'
-fi
+
 
 
 MYSQL_OPTIONS_LOCAL="-A -S ${glb_mycnf['--socket']} --connect_timeout=10"
