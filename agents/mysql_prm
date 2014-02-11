@@ -22,7 +22,7 @@
 # An example usage in /etc/ha.d/haresources:
 #       node1  10.0.0.170 mysql
 #
-# Version: 20140211153204
+# Version: 20140211155457
 #
 # vim:set ts=3 sw=3 sts=3 expandtab:
 #
@@ -1216,7 +1216,11 @@ mysql_start_low() {
    #chgrp -R $OCF_RESKEY_group ${glb_mycnf['--datadir']}
    mysql_params=
    for k in "${!glb_mycnf[@]}"; do
-      mysql_params="$mysql_params $k=${glb_mycnf[$k]}"
+      if [ -z "${glb_mycnf[$k]}" ]; then
+         mysql_params="$mysql_params $k"
+      else
+         mysql_params="$mysql_params $k=${glb_mycnf[$k]}"
+      fi
    done 
    if ocf_is_ms; then
       mysql_params="$mysql_params --skip-slave-start --read-only"
@@ -1606,6 +1610,13 @@ mysql_run() {
 
 #######################################################################
 
+#######################################################################
+# Initialization:
+
+: ${OCF_FUNCTIONS_DIR=${OCF_ROOT}/lib/heartbeat}
+. ${OCF_FUNCTIONS_DIR}/ocf-shellfuncs
+
+#######################################################################
 
 ##########################################################################
 # If DEBUG_LOG is set, make this resource agent easy to debug: set up the
@@ -1627,14 +1638,6 @@ if [ "${DEBUG_LOG}" -a -w "${DEBUG_LOG}" -a ! -L "${DEBUG_LOG}" ]; then
       exec 9>/dev/null
    fi
 fi
-
-#######################################################################
-# Initialization:
-
-: ${OCF_FUNCTIONS_DIR=${OCF_ROOT}/lib/heartbeat}
-. ${OCF_FUNCTIONS_DIR}/ocf-shellfuncs
-
-#######################################################################
 
 # Fill in some defaults if no values are specified
 HOSTOS=`uname`
@@ -1717,11 +1720,6 @@ fi
 #Let's read the Mysql configuration, first declare assoc. array.
 declare -A glb_mycnf
 
-#Load the defaults from mysqld
-for param in `$OCF_RESKEY_binary --print-defaults | tail -n 1`; do
-    glb_mycnf[`echo $param | cut -d'=' -f1`]=`echo $param | cut -d'=' -f2`
-done
-
 #Load [mysqld] section
 for param in `my_print_defaults -c $OCF_RESKEY_config mysqld`; do
    glb_mycnf[`echo $param | cut -d'=' -f1`]=`echo $param | cut -d'=' -f2`
@@ -1732,6 +1730,19 @@ if [ ! -z "$OCF_RESKEY_config_extra_section" ]; then
    for param in `my_print_defaults -c $OCF_RESKEY_config $OCF_RESKEY_config_extra_section`; do
       glb_mycnf[`echo $param | cut -d'=' -f1`]=`echo $param | cut -d'=' -f2`
    done
+fi
+
+# Double check what we absolutely need
+if [ -z "${glb_mycnf['--socket']}" ]; then
+    glb_mycnf['--socket']=`$OCF_RESKEY_binary --verbose --help | grep -e '^socket' | awk '{ print $2 }'`
+fi
+
+if [ -z "${glb_mycnf['--datadir']}" ]; then
+    glb_mycnf['--datadir']=`$OCF_RESKEY_binary --verbose --help | grep -e '^datadir' | awk '{ print $2 }'`
+fi
+
+if [ -z "${glb_mycnf['--pid-file']}" ]; then
+    glb_mycnf['--pid-file']=`$OCF_RESKEY_binary --verbose --help | grep -e '^pid-file' | awk '{ print $2 }'`
 fi
 
 MYSQL_OPTIONS_LOCAL="-A -S ${glb_mycnf['--socket']} --connect_timeout=10"
