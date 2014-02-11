@@ -22,7 +22,7 @@
 # An example usage in /etc/ha.d/haresources:
 #       node1  10.0.0.170 mysql
 #
-# Version: 20140211152036
+# Version: 20140211153204
 #
 # vim:set ts=3 sw=3 sts=3 expandtab:
 #
@@ -52,130 +52,6 @@
 #   OCF_RESKEY_geo_remote_IP
 #   OCF_RESKEY_booth_master_ticket
 
-#######################################################################
-# Initialization:
-
-: ${OCF_FUNCTIONS_DIR=${OCF_ROOT}/lib/heartbeat}
-. ${OCF_FUNCTIONS_DIR}/ocf-shellfuncs
-
-#######################################################################
-
-# Fill in some defaults if no values are specified
-HOSTOS=`uname`
-if [ "X${HOSTOS}" = "XOpenBSD" ];then
-   OCF_RESKEY_binary_default="/usr/local/bin/mysqld_safe"
-   OCF_RESKEY_config_default="/etc/my.cnf"
-   OCF_RESKEY_group_default="_mysql"
-   OCF_RESKEY_log_default="/var/log/mysqld.log"
-else
-   OCF_RESKEY_binary_default="/usr/bin/safe_mysqld"
-   OCF_RESKEY_config_default="/etc/my.cnf"
-   OCF_RESKEY_group_default="mysql"
-   OCF_RESKEY_log_default="/var/log/mysqld.log"
-fi
-OCF_RESKEY_client_binary_default="mysql"
-OCF_RESKEY_config_extra_section_default=""
-OCF_RESKEY_test_user_default="root"
-OCF_RESKEY_test_table_default="mysql.user"
-OCF_RESKEY_test_passwd_default=""
-OCF_RESKEY_enable_creation_default=0
-OCF_RESKEY_additional_parameters_default=""
-OCF_RESKEY_additional_parameters_default=""
-OCF_RESKEY_replication_port_default="3306"
-OCF_RESKEY_max_slave_lag_default="3600"
-OCF_RESKEY_evict_outdated_slaves_default="false"
-OCF_RESKEY_reader_attribute_default="readable"
-OCF_RESKEY_reader_failcount_default="1"
-OCF_RESKEY_backup_lockfile_default="/var/lock/innobackupex"
-OCF_RESKEY_booth_master_ticket_default="ticketMaster"
-
-: ${OCF_RESKEY_binary=${OCF_RESKEY_binary_default}}
-MYSQL_BINDIR=`dirname ${OCF_RESKEY_binary}`
-
-: ${OCF_RESKEY_client_binary=${OCF_RESKEY_client_binary_default}}
-
-: ${OCF_RESKEY_config=${OCF_RESKEY_config_default}}
-: ${OCF_RESKEY_config_extra_section=${OCF_RESKEY_config_extra_section_default}}
-
-: ${OCF_RESKEY_group=${OCF_RESKEY_group_default}}
-
-: ${OCF_RESKEY_log=${OCF_RESKEY_log_default}}
-
-: ${OCF_RESKEY_test_user=${OCF_RESKEY_test_user_default}}
-: ${OCF_RESKEY_test_table=${OCF_RESKEY_test_table_default}}
-: ${OCF_RESKEY_test_passwd=${OCF_RESKEY_test_passwd_default}}
-
-: ${OCF_RESKEY_enable_creation=${OCF_RESKEY_enable_creation_default}}
-: ${OCF_RESKEY_additional_parameters=${OCF_RESKEY_additional_parameters_default}}
-
-: ${OCF_RESKEY_replication_user=${OCF_RESKEY_replication_user_default}}
-: ${OCF_RESKEY_replication_passwd=${OCF_RESKEY_replication_passwd_default}}
-: ${OCF_RESKEY_replication_port=${OCF_RESKEY_replication_port_default}}
-: ${OCF_RESKEY_replication_options=${OCF_RESKEY_replication_options_default}}
-
-: ${OCF_RESKEY_max_slave_lag=${OCF_RESKEY_max_slave_lag_default}}
-: ${OCF_RESKEY_evict_outdated_slaves=${OCF_RESKEY_evict_outdated_slaves_default}}
-
-: ${OCF_RESKEY_reader_attribute=${OCF_RESKEY_reader_attribute_default}}
-: ${OCF_RESKEY_reader_failcount=${OCF_RESKEY_reader_failcount_default}}
-
-: ${OCF_RESKEY_backup_lockfile=${OCF_RESKEY_backup_lockfile_default}}
-
-: ${OCF_RESKEY_geo_remote_IP}=""
-: ${OCF_RESKEY_booth_master_ticket}=${OCF_RESKEY_booth_master_ticket_default}
-: ${OCF_RESKEY_post_promote_script}=""
-
-#######################################################################
-# Convenience variables
-
-MYSQL=`which $OCF_RESKEY_client_binary`
-MY_PRINT_DEFAULTS=`which my_print_defaults`
-
-if [ "$?" -ne "0" ]; then
-    # my_print_defaults not in path
-    BASEDIR=`dirname $MYSQL`
-    MY_PRINT_DEFAULTS="${BASEDIR}/my_print_defaults"
-fi
-
-# TODO: All the glb_mycnf stuff requires bash 4.0+ (el5 is 3.2.5). Will need to validate
-#Let's read the Mysql configuration, first declare assoc. array.
-declare -A glb_mycnf
-
-#Load the defaults from mysqld
-for param in `$OCF_RESKEY_binary --print-defaults | tail -n 1`; do
-    glb_mycnf[`echo $param | cut -d'=' -f1`]=`echo $param | cut -d'=' -f1`
-done
-
-#Load [mysqld] section
-for param in `my_print_defaults -c $OCF_RESKEY_config mysqld`; do
-   glb_mycnf[`echo $param | cut -d'=' -f1`]=`echo $param | cut -d'=' -f1`
-done
-
-#If there an extra_section load it on top
-if [ ! -z "$OCF_RESKEY_config_extra_section" ]; then
-   for param in `my_print_defaults -c $OCF_RESKEY_config $OCF_RESKEY_config_extra_section`; do
-      glb_mycnf[`echo $param | cut -d'=' -f1`]=`echo $param | cut -d'=' -f1`
-   done
-fi
-
-MYSQL_OPTIONS_LOCAL="-A -S ${glb_mycnf['--socket']} --connect_timeout=10"
-MYSQL_OPTIONS_REPL="$MYSQL_OPTIONS_LOCAL --user=$OCF_RESKEY_replication_user --password=$OCF_RESKEY_replication_passwd"
-MYSQL_OPTIONS_TEST="$MYSQL_OPTIONS_LOCAL --user=$OCF_RESKEY_test_user --password=$OCF_RESKEY_test_passwd"
-MYSQL_LAST_ERR=0
-MYSQL_TOO_MANY_CONN_ERR=1040
-
-CRM_MASTER="${HA_SBIN_DIR}/crm_master -l reboot "
-HOSTNAME=`uname -n`
-CRM_ATTR="${HA_SBIN_DIR}/crm_attribute -N $HOSTNAME "
-INSTANCE_ATTR_NAME=`echo ${OCF_RESOURCE_INSTANCE}| awk -F : '{print $1}'`
-CRM_ATTR_REPL_INFO="${HA_SBIN_DIR}/crm_attribute --type crm_config --name ${INSTANCE_ATTR_NAME}_REPL_INFO -s mysql_replication"
-CRM_ATTR_REPL_STATUS="${HA_SBIN_DIR}/crm_attribute --type crm_config --name ${INSTANCE_ATTR_NAME}_REPL_STATUS -s mysql_replication"
-CRM_RES="${HA_SBIN_DIR}/crm_resource"
-CRM_TICKET="${HA_SBIN_DIR}/crm_ticket"
-SSH="/usr/bin/ssh "
-MAX_BINLOG_SIZE_CACHE="${HA_RSCTMP}/max_binlog_size_cache"
-
-#######################################################################
 
 usage() {
   cat <<UEND
@@ -1751,6 +1627,132 @@ if [ "${DEBUG_LOG}" -a -w "${DEBUG_LOG}" -a ! -L "${DEBUG_LOG}" ]; then
       exec 9>/dev/null
    fi
 fi
+
+#######################################################################
+# Initialization:
+
+: ${OCF_FUNCTIONS_DIR=${OCF_ROOT}/lib/heartbeat}
+. ${OCF_FUNCTIONS_DIR}/ocf-shellfuncs
+
+#######################################################################
+
+# Fill in some defaults if no values are specified
+HOSTOS=`uname`
+if [ "X${HOSTOS}" = "XOpenBSD" ];then
+   OCF_RESKEY_binary_default="/usr/local/bin/mysqld_safe"
+   OCF_RESKEY_config_default="/etc/my.cnf"
+   OCF_RESKEY_group_default="_mysql"
+   OCF_RESKEY_log_default="/var/log/mysqld.log"
+else
+   OCF_RESKEY_binary_default="/usr/bin/safe_mysqld"
+   OCF_RESKEY_config_default="/etc/my.cnf"
+   OCF_RESKEY_group_default="mysql"
+   OCF_RESKEY_log_default="/var/log/mysqld.log"
+fi
+OCF_RESKEY_client_binary_default="mysql"
+OCF_RESKEY_config_extra_section_default=""
+OCF_RESKEY_test_user_default="root"
+OCF_RESKEY_test_table_default="mysql.user"
+OCF_RESKEY_test_passwd_default=""
+OCF_RESKEY_enable_creation_default=0
+OCF_RESKEY_additional_parameters_default=""
+OCF_RESKEY_additional_parameters_default=""
+OCF_RESKEY_replication_port_default="3306"
+OCF_RESKEY_max_slave_lag_default="3600"
+OCF_RESKEY_evict_outdated_slaves_default="false"
+OCF_RESKEY_reader_attribute_default="readable"
+OCF_RESKEY_reader_failcount_default="1"
+OCF_RESKEY_backup_lockfile_default="/var/lock/innobackupex"
+OCF_RESKEY_booth_master_ticket_default="ticketMaster"
+
+: ${OCF_RESKEY_binary=${OCF_RESKEY_binary_default}}
+MYSQL_BINDIR=`dirname ${OCF_RESKEY_binary}`
+
+: ${OCF_RESKEY_client_binary=${OCF_RESKEY_client_binary_default}}
+
+: ${OCF_RESKEY_config=${OCF_RESKEY_config_default}}
+: ${OCF_RESKEY_config_extra_section=${OCF_RESKEY_config_extra_section_default}}
+
+: ${OCF_RESKEY_group=${OCF_RESKEY_group_default}}
+
+: ${OCF_RESKEY_log=${OCF_RESKEY_log_default}}
+
+: ${OCF_RESKEY_test_user=${OCF_RESKEY_test_user_default}}
+: ${OCF_RESKEY_test_table=${OCF_RESKEY_test_table_default}}
+: ${OCF_RESKEY_test_passwd=${OCF_RESKEY_test_passwd_default}}
+
+: ${OCF_RESKEY_enable_creation=${OCF_RESKEY_enable_creation_default}}
+: ${OCF_RESKEY_additional_parameters=${OCF_RESKEY_additional_parameters_default}}
+
+: ${OCF_RESKEY_replication_user=${OCF_RESKEY_replication_user_default}}
+: ${OCF_RESKEY_replication_passwd=${OCF_RESKEY_replication_passwd_default}}
+: ${OCF_RESKEY_replication_port=${OCF_RESKEY_replication_port_default}}
+: ${OCF_RESKEY_replication_options=${OCF_RESKEY_replication_options_default}}
+
+: ${OCF_RESKEY_max_slave_lag=${OCF_RESKEY_max_slave_lag_default}}
+: ${OCF_RESKEY_evict_outdated_slaves=${OCF_RESKEY_evict_outdated_slaves_default}}
+
+: ${OCF_RESKEY_reader_attribute=${OCF_RESKEY_reader_attribute_default}}
+: ${OCF_RESKEY_reader_failcount=${OCF_RESKEY_reader_failcount_default}}
+
+: ${OCF_RESKEY_backup_lockfile=${OCF_RESKEY_backup_lockfile_default}}
+
+: ${OCF_RESKEY_geo_remote_IP}=""
+: ${OCF_RESKEY_booth_master_ticket}=${OCF_RESKEY_booth_master_ticket_default}
+: ${OCF_RESKEY_post_promote_script}=""
+
+#######################################################################
+# Convenience variables
+
+MYSQL=`which $OCF_RESKEY_client_binary`
+MY_PRINT_DEFAULTS=`which my_print_defaults`
+
+if [ "$?" -ne "0" ]; then
+    # my_print_defaults not in path
+    BASEDIR=`dirname $MYSQL`
+    MY_PRINT_DEFAULTS="${BASEDIR}/my_print_defaults"
+fi
+
+# TODO: All the glb_mycnf stuff requires bash 4.0+ (el5 is 3.2.5). Will need to validate
+#Let's read the Mysql configuration, first declare assoc. array.
+declare -A glb_mycnf
+
+#Load the defaults from mysqld
+for param in `$OCF_RESKEY_binary --print-defaults | tail -n 1`; do
+    glb_mycnf[`echo $param | cut -d'=' -f1`]=`echo $param | cut -d'=' -f2`
+done
+
+#Load [mysqld] section
+for param in `my_print_defaults -c $OCF_RESKEY_config mysqld`; do
+   glb_mycnf[`echo $param | cut -d'=' -f1`]=`echo $param | cut -d'=' -f2`
+done
+
+#If there an extra_section load it on top
+if [ ! -z "$OCF_RESKEY_config_extra_section" ]; then
+   for param in `my_print_defaults -c $OCF_RESKEY_config $OCF_RESKEY_config_extra_section`; do
+      glb_mycnf[`echo $param | cut -d'=' -f1`]=`echo $param | cut -d'=' -f2`
+   done
+fi
+
+MYSQL_OPTIONS_LOCAL="-A -S ${glb_mycnf['--socket']} --connect_timeout=10"
+MYSQL_OPTIONS_REPL="$MYSQL_OPTIONS_LOCAL --user=$OCF_RESKEY_replication_user --password=$OCF_RESKEY_replication_passwd"
+MYSQL_OPTIONS_TEST="$MYSQL_OPTIONS_LOCAL --user=$OCF_RESKEY_test_user --password=$OCF_RESKEY_test_passwd"
+MYSQL_LAST_ERR=0
+MYSQL_TOO_MANY_CONN_ERR=1040
+
+CRM_MASTER="${HA_SBIN_DIR}/crm_master -l reboot "
+HOSTNAME=`uname -n`
+CRM_ATTR="${HA_SBIN_DIR}/crm_attribute -N $HOSTNAME "
+INSTANCE_ATTR_NAME=`echo ${OCF_RESOURCE_INSTANCE}| awk -F : '{print $1}'`
+CRM_ATTR_REPL_INFO="${HA_SBIN_DIR}/crm_attribute --type crm_config --name ${INSTANCE_ATTR_NAME}_REPL_INFO -s mysql_replication"
+CRM_ATTR_REPL_STATUS="${HA_SBIN_DIR}/crm_attribute --type crm_config --name ${INSTANCE_ATTR_NAME}_REPL_STATUS -s mysql_replication"
+CRM_RES="${HA_SBIN_DIR}/crm_resource"
+CRM_TICKET="${HA_SBIN_DIR}/crm_ticket"
+SSH="/usr/bin/ssh "
+MAX_BINLOG_SIZE_CACHE="${HA_RSCTMP}/max_binlog_size_cache"
+
+#######################################################################
+
 
 case "$1" in
    meta-data)    meta_data
