@@ -1,0 +1,599 @@
+#!/usr/bin/perl
+
+# Endeavoring here to only use modules included in the base perl package on the major distros
+use Data::Dumper;
+use Scalar::Util qw/ looks_like_number /;
+
+use constant {
+	# Pacemaker RA standard exit codes
+	OCF_SUCCESS => 0,
+	OCF_ERR_GENERIC => 1,
+	OCF_ERR_ARGS => 2,
+	OCF_ERR_UNIMPLEMENTED => 3,
+	OCF_ERR_PERM => 4,
+	OCF_ERR_INSTALLED => 5,
+	OCF_ERR_CONFIGURED => 6,
+	OCF_ERR_NOT_RUNNING => 7,
+	OCF_RUNNING_MASTER => 8,
+	OCF_FAILED_MASTER => 9,
+	
+	# Internal debugging levels
+	LOG_DEBUG => 5,
+	LOG_INFO => 4,
+	LOG_WARN => 3,
+	LOG_CRIT => 2,
+	LOG_FATAL => 1,
+	
+	# CLI tools
+	CRM_MASTER_CLI => "crm_master",
+	CRM_ATTR => "crm_attribute",
+	CIBADMIN => "cibadmin",
+	CRM_NODE=> "crm_node",
+	
+	MYSQL_CLI => "mysql",
+	SERVICE_CLI => "service",	
+	MYSQLD_SAFE => "mysqld_safe",
+	
+	# Grastate path
+	GRASTATE => "grastate.dat",
+};
+
+my %defaults = (
+	'OCF_RESKEY_datadir' => '/var/lib/mysql',
+	'OCF_RESKEY_enable_bootstrap' => 0,
+	'OCF_RESKEY_bootstrap_timeout' => 120,
+);
+
+sub load_defaults {
+	foreach my $var( keys %defaults ) {
+		unless( defined $ENV{$var} ) {
+			$ENV{$var} = $defaults{$var};
+		}
+	}
+}
+
+use vars qw { @ARGV %ENV $LOG_LEVEL };
+
+
+#####
+# Logging 
+#####
+
+# $LOG_LEVEL = LOG_DEBUG;
+$LOG_LEVEL = LOG_INFO;
+
+my $log = "/tmp/pxc_resource_agent.log";
+open( LOG, ">> $log" ) or die "Could not open logfile: $log\n";
+
+sub print_log {
+	my $date = `date`; chop $date;
+	print LOG $date . " " . join( ' ', @_ ) . "\n";
+}
+
+sub debug {
+	return if $LOG_LEVEL < LOG_DEBUG;
+	print_log( "DEBUG", @_);
+}
+sub info {
+	return if $LOG_LEVEL < LOG_INFO;
+	print_log( "INFO", @_ );
+}
+sub warning {
+	return if $LOG_LEVEL < LOG_WARN;
+	print_log( "WARN", @_ );
+}
+sub error {
+	return if $LOG_LEVEL < LOG_ERROR;
+	print_log( "ERROR", @_ );
+}
+
+
+####
+# Utility functions
+####
+
+# Fork a system call and get a string for the output
+# $name: unique id for this command (for logging output)
+# $command: the command to run
+# $ok_rcs: return codes that should not through an exception (default: ['0'])
+sub unix_exec_string {
+	my( $name, $cmd, $acceptable_rcs ) = @_;
+	
+	$acceptable_rcs = [ 0 ] unless defined $acceptable_rcs;
+	
+	debug( "running $name: $cmd" );
+	my $output = `$cmd`; chop $output;
+	my $rc = $? >> 8;
+	
+	debug( Dumper( $acceptable_rcs ));
+		
+	if( scalar grep {$_ == $rc} @$acceptable_rcs ) {
+		debug( "$name rc: $rc");
+		debug( "$name output: '$output'");
+	} else {
+	 	die "$name failed: $rc!\n";		
+	}
+	
+	return $output;
+}
+
+sub unix_exec_ok {
+	eval{ unix_exec_string( @_ )};
+	return !$@;
+}
+
+sub get_hostname {
+	unix_exec_string( 'get_hostname', CRM_NODE . ' -n' );
+}
+
+
+# Get a mysql global status variable (if mysql is running)
+sub mysql_global_status {
+	my $variable = shift @_;
+	return unix_exec_string( 'mysql global status', 
+		MYSQL_CLI . ' --skip-column-names -Be "select variable_value from information_schema.global_status where variable_name=\'' . $variable . '\'"' 
+	);
+}
+
+# tell pacemaker this node may or may not be a master
+sub master_ok {
+	return unix_exec_string( 'crm master', CRM_MASTER_CLI . ' -l reboot -v 1' );
+}
+sub master_not_ok {
+	return unix_exec_string( 'crm master', CRM_MASTER_CLI . ' -l reboot -D' );
+}
+
+# Node-specific attributes
+sub crm_attr_set {
+	my( $name, $value ) = @_;
+
+	return unix_exec_ok( 'crm attr set', 
+		CRM_ATTR . " -l reboot --name $name-" . $ENV{'OCF_RESOURCE_INSTANCE'} . " -v $value"
+	);
+}
+sub crm_attr_delete {
+	my( $name ) = @_;
+	return unix_exec_ok( 'crm attr delete', 
+		CRM_ATTR . " -l reboot --name $name-" . $ENV{'OCF_RESOURCE_INSTANCE'} . " --delete"
+	);
+}
+sub crm_attr_get {
+	my( $name ) = @_;
+	
+	return unix_exec_string( 'crm attr get', 
+		CRM_ATTR . " -l reboot --name $name-" . $ENV{'OCF_RESOURCE_INSTANCE'} . " --query -q"
+	);
+}
+
+# Query CIB for all attributes for THIS resource
+sub cib_query_attribute {
+	my( $name ) = @_;
+	
+	my $cmd = CIBADMIN . ' --query --xpath "//status/node_state/transient_attributes/*/nvpair[@name = \"' . $name . '-' . $ENV{'OCF_RESOURCE_INSTANCE'} . '\"]"';
+
+	debug( "cibadmin call: $cmd" );
+	my @output = `$cmd`;
+	my $rc = $? >> 8;
+	
+	debug( "cibadmin call rc: $rc");
+ 	die "cibadmin call failed: $rc" if $rc > 0 and $rc != 6;
+	
+
+	my $count = 0;
+	my %matches;
+	foreach my $line( @output ) {
+		debug( $line );
+		if( $line =~ m/$name/ ) {
+			$line =~ m/status-(\w+)-$name/;
+			my $key = $1;
+			
+			$line =~ m/value=\"(.*)\"/;
+			my $value = $1;
+			
+			$matches{$key} = $value;
+			$count++;
+		}
+	}
+	
+	return \%matches;
+}
+
+# issue service mysql command
+sub service_mysql {
+	my $command = shift @_;
+	return unix_exec_ok( "service mysql $command", 
+		SERVICE_CLI . ' mysql ' . $command );
+}
+
+
+##### 
+# OCF action handlers
+#####
+
+sub pxc_meta {
+	print <<END;
+<?xml version="1.0"?>
+<!DOCTYPE resource-agent SYSTEM "ra-api-1.dtd">
+<resource-agent name="pxc_resource_agent">
+<version>0.1</version>
+
+<longdesc lang="en">
+A resource agent for Percona XtraDB Cluster management.  This is meant to be SAFE to run without worrying about Pacemaker stopping or restarting MySQL, as such the 'stop' method is a noop.  
+This RA is meant to be configured as a master/slave set.  'Master' nodes are only those in 'Synced' state and your master-max is how many nodes you want to permit into the 'master' role.  This is strictly for convenience for attaching other resources like IPs to nodes you treat as 'masters'.  'Slave' nodes are either in 'Donor/Desynced' (indicating that they are donors, or otherwise in the desync state), OR 'Synced' nodes that could be masters, but master-max is already satisfied.  
+This RA WILL start nodes that are not running automatically.  Nodes that are taken down for maintenance should should be moved to 'standby' in Pacemaker (remember this does not stop mysql automatically!).  Typically nodes restarted by Pacemaker would be those that crashed in some way and will require a state transfer (likely SST).  
+This RA is CAPABLE of re-bootstrapping a fully down cluster by finding the node with the highest GTID, bootstrapping it, and then subsequently starting the others.  HOWEVER, this will only take into account the nodes that are online in Pacemaker.  If the node that happened to have the highest GTID is not available in Pacemaker during the bootstrap selection, Pacemaker cannot consider it and will pick the next highest GTID, potentially losing you transaction.  Because of this risk, this feature is OPT-IN.
+Here is an example configuration (ala crm):
+
+	primitive p_pxc ocf:percona:pxc_resource_agent \
+	        op monitor interval="2s" role="Master" \
+	        op monitor interval="5s" role="Slave" \
+	        op start timeout="10000s" interval="0"
+	ms ms_pxc p_pxc \
+	        meta master-max="3" clone-max="3" target-role="Master" is-managed="true" ordered="false" interleave="true" notify="false"
+</longdesc>
+
+<shortdesc lang="en">Percona XtraDB Cluster resource agent</shortdesc>
+ 
+<parameters>
+
+<parameter name="datadir" unique="0" required="0">
+<longdesc lang="en">
+Specifically, this is where the grastate.dat should reside.  Defaults to /var/lib/mysql.  
+</longdesc>
+<shortdesc lang="en">Data directory of mysql</shortdesc>
+<content type="string" default="/var/lib/mysql"/>
+</parameter>
+
+<parameter name="enable_bootstrap" unique="0" required="0">
+<longdesc lang="en">
+Should the RA try to bootstrap an all-down cluster?  This can be risky.  When a cluster is all down, the proper way to restart is to find the node with the highest GTID, bootstrap it, and then start the remaining nodes (and allow them to SST).  This prevents data loss, but only if ALL nodes are considered.  
+
+This feature allows nodes to start as soon as the Pacemaker servers regain quorum, and they cannot wait indefinitely for all node to recover.  
+
+For this feature to even be possible to work right, 'ordered' MUST be 'false' in the Master/Slave configuration.  That is, all nodes must get a start operation simultaneously for this feature to possibly detect which node has the highest GTID.
+</longdesc>
+<shortdesc lang="en">Allow Pacemaker to bootstrap the cluster</shortdesc>
+<content type="boolean" default="false"/>
+</parameter>
+
+<parameter name="bootstrap_timeout" unique="0" required="0">
+<longdesc lang="en">
+When bootstrapping, wait at least this long to ensure all posssible members have a chance to reboot and rejoin the Pacemaker cluster to be considered.  Bootstrapping will start as soon as Pacemaker has quorum, so late re-starting nodes may not contribute the decision as to which node should start first.  
+</longdesc>
+<shortdesc lang="en">Allow Pacemaker to bootstrap the cluster</shortdesc>
+<content type="integer" default="120"/>
+</parameter>
+ 
+</parameters>
+
+<actions>
+<action name="start"   timeout="300" />
+<action name="stop"    timeout="20" />
+<action name="promote"    timeout="5" />
+<action name="demote"   timeout="5" />
+<action name="monitor_Master" depth="0"  timeout="20" interval="2"/>
+<action name="monitor_Slave" depth="0"  timeout="20" interval="5"/>
+<action name="meta-data"  timeout="5" />
+<action name="validate-all"  timeout="30" />
+</actions>
+</resource-agent>
+
+END
+
+	return OCF_SUCCESS;
+}
+
+
+sub pxc_validate {
+	# Check that all the executables I expect are in the the PATH
+	my $rc = OCF_SUCCESS;
+	foreach my $binary ( CRM_MASTER_CLI, CRM_ATTR, CRM_NODE, CIBADMIN, MYSQL_CLI, SERVICE_CLI, MYSQLD_SAFE ) {
+		unless( unix_exec_ok( 'test_binary', "which $binary")) {
+			error( "Could not find $binary in PATH" );
+			$rc = OCF_ERR_INSTALLED;
+		}
+	}
+	return $rc unless $rc == OCF_SUCCESS;
+	
+	# $OCF_SUCCESS — all is well, the configuration is valid and usable.
+	# $OCF_ERR_CONFIGURED — the user has misconfigured the resource.
+	# $OCF_ERR_INSTALLED — the resource has possibly been configured correctly, but a vital component is missing on the node where validate-all is being executed.
+	# $OCF_ERR_PERM — the resource is configured correctly and is not missing any required components, but is suffering from a permission issue (such as not being able to create a necessary file).
+	
+	# Check RA options ok
+	return OCF_ERR_CONFIGURED unless -d $ENV{'OCF_RESKEY_datadir'};
+	unless( looks_like_number( $ENV{'OCF_RESKEY_enable_bootstrap'} ) and 
+		($ENV{'OCF_RESKEY_enable_bootstrap'} == 0 or $ENV{'OCF_RESKEY_enable_bootstrap'} == 1 )) 
+	{
+		# FIXME Emitting this throws an error, but it doesn't display properly 
+		error( "enable_bootstrap must be 1 or 0" );
+		return OCF_ERR_CONFIGURED;		
+	}
+	
+	unless( looks_like_number( $ENV{'OCF_RESKEY_bootstrap_timeout'} ) and
+		$ENV{'OCF_RESKEY_bootstrap_timeout'} > 0 ) 
+	{
+		error( "bootstrap_timeout is not a positive number" );
+		return OCF_ERR_CONFIGURED;
+	}
+	
+	return OCF_SUCCESS;
+}
+
+sub pxc_monitor {
+	# Check local PXC instance	
+
+	my $local_state = undef;
+	my $rc = OCF_ERR_GENERIC;
+	eval {
+		$local_state = mysql_global_status( 'wsrep_local_state_comment' );
+	};
+	if( $@ or !defined( $local_state ) ) {
+		warning( "global status problem: $@" );
+		master_not_ok();
+		crm_attr_delete( 'pxc_running' );
+		
+		# Check the service to see if it is running
+ 		if( !service_mysql( 'status' ) ) {
+			$rc = $ENV{'OCF_RESKEY_CRM_meta_role'} eq 'Master' ? 
+				OCF_FAILED_MASTER : OCF_ERR_NOT_RUNNING;
+ 		} else {
+			$rc = OCF_ERR_GENERIC;
+		}
+	} elsif( $local_state eq 'Synced' ) {		
+		if( $ENV{'OCF_RESKEY_CRM_meta_role'} eq 'Master') {
+			debug( "already a master, normal" );	
+			crm_attr_set( 'pxc_running', "master" );
+			$rc = OCF_RUNNING_MASTER;			
+		} else {
+			# This node can be promoted to "master"
+			debug( "not a master, but could be" );
+			master_ok();
+			$rc = OCF_SUCCESS;
+		}
+	} elsif( $local_state eq 'Donor/Desynced') {
+		debug( "donor/desynced node" );
+		master_not_ok();
+		crm_attr_set( 'pxc_running', "slave" );
+		$rc = OCF_SUCCESS;
+	}
+	
+	# Clear out the GTID every monitor just to be sure we never get a stale value
+	pxc_clear_gtid();
+	
+	if( $rc == OCF_SUCCESS or $rc == OCF_RUNNING_MASTER ) {
+		info( "monitor results: $local_state" );
+	} else {
+		error( "monitor results: $local_state" );
+	}
+	return $rc;
+}
+
+sub are_we_cool {
+	my $state = pxc_monitor();
+	if( $state == OCF_RUNNING_MASTER or $state == OCF_SUCCESS ) {
+		# Promote already done for us
+		return OCF_SUCCESS;
+	} else {
+		return $state;
+	}
+}
+sub pxc_promote {
+	debug( "promote action" );
+	return are_we_cool();
+}
+
+sub pxc_demote {
+	debug( "demote action" );
+	# return are_we_cool();
+	return OCF_SUCCESS;
+}
+
+sub pxc_start {
+	info( "start action" );
+	
+	if( service_mysql( 'status' ) ) {
+		info( "PXC already running" );
+		return OCF_SUCCESS;
+	} else {
+		# Are there any other nodes in the cluster?
+		if( keys %{cib_query_attribute('pxc_running')} == 0 ) {
+			if( $ENV{'OCF_RESKEY_enable_bootstrap'} ) {
+				info( "No other nodes visibly running, trying bootstrap" );
+				return pxc_bootstrap();
+			} else {
+				warning( 'enable_bootstrap is disabling, waiting for manual intervention' );
+				return OCF_ERR_UNIMPLEMENTED;
+			}
+		} else {
+			info( "Other nodes report running, starting..." );
+			
+			service_mysql( 'stop' ); # clean out any pid files
+			if( service_mysql( 'start' )) {	
+				return OCF_SUCCESS;
+			} else {
+				error( "service mysql got error" );
+				return OCF_ERR_GENERIC;
+			}
+		}		
+	}	
+}
+
+# Special case:  When there are no other clones, we need to figure out who can start first
+sub pxc_bootstrap {
+	# First, calculate our GTID and store it in the CIB
+	pxc_get_gtid();
+	info( "GTID: " . crm_attr_get( 'pxc_uuid') . ':' . crm_attr_get( 'pxc_seqno' ));
+	
+	# Second, wait until all nodes show a GTID OR a timeout happens
+	my $timeout = $ENV{'OCF_RESKEY_bootstrap_timeout'};
+	my $seqnos = cib_query_attribute( 'pxc_seqno' );
+	while( keys %$seqnos < $ENV{'OCF_RESKEY_CRM_meta_clone_max'} and $timeout > 0 ) {
+		info( keys( %$seqnos ) . " out of " . $ENV{'OCF_RESKEY_CRM_meta_clone_max'} . " have submitted GTIDs, waiting for the rest... ($timeout s)");
+		sleep 1;
+		$timeout--;
+		$seqnos = cib_query_attribute( 'pxc_seqno' );
+	}
+	if( keys %$seqnos < $ENV{'OCF_RESKEY_CRM_meta_clone_max'} ) {
+		warn( "Timeout exceeded, continuing bootstrap without all the nodes." );
+	} else {
+		info( "Got GTIDs from all nodes" );
+	}
+	
+	# Third, find the node with the biggest GTID
+	my $seqnos = cib_query_attribute( 'pxc_seqno' );
+	my $most_ahead = undef;
+	for my $node( sort keys %$seqnos ) {
+		my $seqno = $seqnos->{$node};
+		if( !defined( $most_ahead ) or $seqno > $seqnos->{$most_ahead} ) {
+			$most_ahead = $node;
+		}
+	}	
+	
+	# 3b: need to sanity check the UUIDs here
+	# FIXME
+	
+	# Fourth, if the most ahead is US, then we bootstrap
+	my $hostname = get_hostname();
+	
+	info( "furthest ahead GTID: $most_ahead, us: $hostname");
+	if( $most_ahead eq $hostname ) {
+		info( "Bootstrapping PXC...");		
+		if( service_mysql( 'bootstrap-pxc' )) { 
+			crm_attr_set( 'pxc_running', 'bootstrapped' );
+			return OCF_SUCCESS;
+		} else {
+			error( "service mysql got error" );
+			return OCF_ERR_GENERIC;
+		}
+	} else {
+		info( "Letting $most_ahead bootstrap, waiting..." );
+
+		while( keys %{cib_query_attribute('pxc_running')} == 0 ) {
+			sleep 1;
+		}
+		return pxc_start();
+	}
+}
+
+# Get the GTID of the local node and store it in a node attribute
+sub pxc_get_gtid {
+	# return;
+	my ($uuid, $seqno) = (undef, undef);
+	
+	# Start with running instance
+	if( service_mysql( 'status' ) ) {
+		 $uuid = mysql_global_status( 'wsrep_local_state_uuid' );
+		 $seqno = mysql_global_status( 'wsrep_last_committed' );
+	} else {
+		# If not running, check grastate
+		eval {
+			my @output = split( /\n/, 
+				unix_exec_string( 'grastate', 'cat ' . $ENV{'OCF_RESKEY_datadir'} . '/' . GRASTATE )
+			);
+			for my $line( @output ) {
+				if( $line =~ m/uuid:\s+(.+)/) {
+					$uuid = $1;
+				} elsif( $line =~ m/seqno:\s+(.+)/ ) {
+					$seqno = $1;
+				}
+			}
+		};
+		
+		if( $@ or $seqno == -1 or !defined( $seqno )) {
+			# Lastly, try --wsrep_recover	
+			warning( "Trying --wsrep_recover" );
+			eval {
+				my @output = split( /\n/, unix_exec_string( 
+					'wsrep_recover', 
+					MYSQLD_SAFE . ' --wsrep_recover' 
+				));
+			
+				foreach my $line( @output ) {
+					if( $line =~ m/Recovered position ([\w\-]+)\:([\-\d]+)/ ) {
+						$uuid = $1; $seqno = $2;
+					} else {
+						debug( "NO MATCH: " . $line );
+					}
+				}
+			};
+		}
+	}
+	
+	if( $@ or ( !defined( $uuid ) or !defined( $seqno ))) {
+		error( "Could not get local GTID: $@" );
+		crm_attr_set( 'pxc_uuid', 0 );
+		crm_attr_set( 'pxc_seqno', 0 );
+			
+	} else {
+		debug( "gtid: $uuid:$seqno");
+
+		crm_attr_set( 'pxc_uuid', $uuid );
+		crm_attr_set( 'pxc_seqno', $seqno );
+	}
+}
+
+sub pxc_clear_gtid {
+	crm_attr_delete( 'pxc_uuid' );
+	crm_attr_delete( 'pxc_seqno' );		
+}
+
+
+# NEED:
+# - valiation of configuration and environment
+# - user/pass variables?
+# - other config variables? (e.g., timeout)
+#	- auto-rebootstrap? rebootstrap-wait-timeout
+# 
+# - do something sane when we discover mismatching cluster state UUIDs
+
+# Main block
+eval {
+	my $command = $ARGV[0];
+	
+	load_defaults();
+	
+	# Only validate on specific actions since validation is heavy
+	my $rc = OCF_SUCCESS;
+	if( $command eq 'start' or $command eq 'promote' or $command eq 'stop' or $command eq 'demote' ) {
+		$rc = pxc_validate();
+	}
+	
+	# my $rc = OCF_SUCCESS;
+	unless( $rc == OCF_SUCCESS ) {
+		# Validate error
+		error( "Validation failed, check your configuration" );
+	} else {
+		debug( "ARGV: " . Dumper( \@ARGV ));
+		debug( "ENV: " . Dumper( \%ENV ));
+		debug( "Command: $command");
+	
+		if( $command eq 'monitor') {
+			$rc = pxc_monitor();
+		} elsif( $command eq 'promote') {
+			$rc = pxc_promote();
+		} elsif( $command eq 'demote') {
+			$rc = pxc_demote();
+		} elsif( $command eq 'start') {
+			$rc = pxc_start();
+		} elsif( $command eq 'validate-all') {
+			$rc = pxc_validate();
+		} elsif( $command eq 'meta-data') {
+			$rc = pxc_meta();
+		} else {
+			info( "$command: noop");
+		}
+	}
+	
+	debug( "$command: $rc" );
+	
+	close( LOG );
+	exit $rc;
+	
+};
+
+if( $@ ) {
+	error( $@ );
+	close( LOG );
+	exit OCF_ERR_GENERIC;
+}
