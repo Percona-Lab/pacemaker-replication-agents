@@ -176,8 +176,12 @@ sub cib_query_attribute {
 	my $rc = $? >> 8;
 	
 	debug( "cibadmin call rc: $rc");
- 	die "cibadmin call failed: $rc" if $rc > 0 and $rc != 6;
 	
+	# Return an empty hash if cibadmin fails
+	if( $rc > 0 and $rc != 6 ) {
+	 	warning( "cibadmin call failed: $rc" );
+		return {};
+	}
 
 	my $count = 0;
 	my %matches;
@@ -340,10 +344,11 @@ sub pxc_monitor {
  		} else {
 			$rc = OCF_ERR_GENERIC;
 		}
-	} elsif( $local_state eq 'Synced' ) {		
+	} elsif( $local_state eq 'Synced' ) {	
+		crm_attr_set( 'pxc_running', "master" );
+			
 		if( $ENV{'OCF_RESKEY_CRM_meta_role'} eq 'Master') {
 			debug( "already a master, normal" );	
-			crm_attr_set( 'pxc_running', "master" );
 			$rc = OCF_RUNNING_MASTER;			
 		} else {
 			# This node can be promoted to "master"
@@ -356,15 +361,17 @@ sub pxc_monitor {
 		master_not_ok();
 		crm_attr_set( 'pxc_running', "slave" );
 		$rc = OCF_SUCCESS;
+	} else {
+		crm_attr_set( 'pxc_running', "running" );
 	}
 	
 	# Clear out the GTID every monitor just to be sure we never get a stale value
 	pxc_clear_gtid();
 	
 	if( $rc == OCF_SUCCESS or $rc == OCF_RUNNING_MASTER ) {
-		info( "monitor results: $local_state" );
+		info( "monitor results: $local_state (rc: $rc)" );
 	} else {
-		error( "monitor results: $local_state" );
+		error( "monitor results: $local_state (rc: $rc)" );
 	}
 	return $rc;
 }
@@ -423,7 +430,6 @@ sub pxc_start {
 sub pxc_bootstrap {
 	# First, calculate our GTID and store it in the CIB
 	pxc_get_gtid();
-	info( "GTID: " . crm_attr_get( 'pxc_uuid') . ':' . crm_attr_get( 'pxc_seqno' ));
 	
 	# Second, wait until all nodes show a GTID OR a timeout happens
 	my $timeout = $ENV{'OCF_RESKEY_bootstrap_timeout'};
@@ -526,7 +532,7 @@ sub pxc_get_gtid {
 		crm_attr_set( 'pxc_seqno', 0 );
 			
 	} else {
-		debug( "gtid: $uuid:$seqno");
+		info( "local gtid: $uuid:$seqno");
 
 		crm_attr_set( 'pxc_uuid', $uuid );
 		crm_attr_set( 'pxc_seqno', $seqno );
@@ -536,6 +542,12 @@ sub pxc_get_gtid {
 sub pxc_clear_gtid {
 	crm_attr_delete( 'pxc_uuid' );
 	crm_attr_delete( 'pxc_seqno' );		
+}
+
+sub pxc_stop {
+	master_not_ok();
+	crm_attr_delete( 'pxc_running' );
+	return OCF_SUCCESS;
 }
 
 
@@ -576,6 +588,8 @@ eval {
 			$rc = pxc_demote();
 		} elsif( $command eq 'start') {
 			$rc = pxc_start();
+		} elsif( $command eq 'stop') {
+			$rc = pxc_stop();
 		} elsif( $command eq 'validate-all') {
 			$rc = pxc_validate();
 		} elsif( $command eq 'meta-data') {
