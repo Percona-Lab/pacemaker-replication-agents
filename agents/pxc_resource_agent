@@ -1,5 +1,31 @@
 #!/usr/bin/perl
 
+#
+#   Percona Xtradb Cluster resource agent for Pacemaker
+#
+#	This program is free software; you can redistribute it and/or modify
+#	it under the terms of version 2 of the GNU General Public License as
+# 	published by the Free Software Foundation.
+#
+#	This program is distributed in the hope that it would be useful, but
+#	WITHOUT ANY WARRANTY; without even the implied warranty of
+#	MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+#
+#	Further, this software is distributed without any warranty that it is
+#	free of the rightful claim of any third person regarding infringement
+#	or the like.  Any license provided herein, whether implied or
+#	otherwise, applies only to this software file.  Patent licenses, if
+#	any, provided herein do not apply to combinations of this program with
+#	other software, or any other product whatsoever.
+#
+#	You should have received a copy of the GNU General Public License
+#	along with this program; if not, write the Free Software Foundation,
+#	Inc., 59 Temple Place - Suite 330, Boston MA 02111-1307, USA.
+#	
+# 	Copyright (c) 2014, Percona Inc., Jay Janssen
+#
+
+
 # Endeavoring here to only use modules included in the base perl package on the major distros
 use Data::Dumper;
 use Scalar::Util qw/ looks_like_number /;
@@ -68,6 +94,7 @@ open( LOG, ">> $log" ) or die "Could not open logfile: $log\n";
 sub print_log {
 	my $date = `date`; chop $date;
 	print LOG $date . " " . join( ' ', @_ ) . "\n";
+	# print $date . " " . join( ' ', @_ ) . "\n";
 }
 
 sub debug {
@@ -365,6 +392,9 @@ sub pxc_monitor {
 		crm_attr_set( 'pxc_running', "running" );
 	}
 	
+    # crm_attr_set( 'pxc_last_checked', `date '+\%s'` );
+	
+	
 	# Clear out the GTID every monitor just to be sure we never get a stale value
 	pxc_clear_gtid();
 	
@@ -545,6 +575,7 @@ sub pxc_clear_gtid {
 }
 
 sub pxc_stop {
+	info( 'stop' );
 	master_not_ok();
 	crm_attr_delete( 'pxc_running' );
 	return OCF_SUCCESS;
