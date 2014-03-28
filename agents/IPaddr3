@@ -890,7 +890,7 @@ ip_validate() {
 # The log directory must be a directory owned by root, with permissions 0700,
 # and the log must be writable and not a symlink.
 ##########################################################################
-DEBUG_LOG="/tmp/IPaddr2.ocf.ra.debug/log"
+DEBUG_LOG="/tmp/IPaddr3.ocf.ra.debug/log"
 if [ "${DEBUG_LOG}" -a -w "${DEBUG_LOG}" -a ! -L "${DEBUG_LOG}" ]; then
     DEBUG_LOG_DIR="${DEBUG_LOG%/*}"
     if [ -d "${DEBUG_LOG_DIR}" ]; then

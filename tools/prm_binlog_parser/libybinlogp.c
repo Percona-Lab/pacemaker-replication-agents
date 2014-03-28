@@ -163,11 +163,10 @@ static bool ybpi_check_event(struct ybp_event* e, struct ybp_binlog_parser* p)
 			e->type_code < MAX_TYPE_CODE &&
 			e->length > MIN_EVENT_LENGTH &&
 			e->length < MAX_EVENT_LENGTH && 
-			e->timestamp >= p->min_timestamp &&
 			e->timestamp <= p->max_timestamp) {
 		return true;
 	} else {
-		Dprintf("e->type_code = %d, e->length=%zd, e->timestamp=%d\n", e->type_code, e->length, e->timestamp);
+		Dprintf("e->server_id=%lu e->type_code = %d, e->length=%zd, e->timestamp=%d\n", e->server_id, e->type_code, e->length, e->timestamp);
 		Dprintf("p->min_timestamp = %d, p->max_timestamp = %d\n", p->min_timestamp, p->max_timestamp);
 		return false;
 	}
@@ -308,7 +307,7 @@ static int ybpi_read_event(struct ybp_binlog_parser* restrict p, off_t offset, s
 		}
 		amt_read = 0;
 		Dprintf("malloced %d bytes at 0x%p for a %s\n", evbuf->length - EVENT_HEADER_SIZE, evbuf->data, ybpi_event_types[evbuf->type_code]);
-		while (amt_read < evbuf->length - EVENT_HEADER_SIZE) {
+		while ((uint64_t) amt_read < evbuf->length - EVENT_HEADER_SIZE) {
 			ssize_t remaining = evbuf->length - EVENT_HEADER_SIZE - amt_read;
 			char* target = evbuf->data + amt_read;
 			ssize_t read_this_time = read(p->fd, target, remaining);

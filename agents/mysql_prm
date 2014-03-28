@@ -52,6 +52,8 @@
 #   OCF_RESKEY_backup_lockfile
 #   OCF_RESKEY_geo_remote_IP
 #   OCF_RESKEY_booth_master_ticket
+#   OCF_RESKEY_post_promote_script
+#   OCF_RESKEY_prm_binlog_parser_path
 
 #######################################################################
 # Initialization:
@@ -97,7 +99,7 @@ OCF_RESKEY_backup_lockfile_default="/var/lock/innobackupex"
 OCF_RESKEY_booth_master_ticket_default="ticketMaster"
 
 : ${OCF_RESKEY_binary=${OCF_RESKEY_binary_default}}
-MYSQL_BINDIR=`dirname ${OCF_RESKEY_binary}`
+MYSQL_SBINDIR=`dirname ${OCF_RESKEY_binary}`
 
 : ${OCF_RESKEY_client_binary=${OCF_RESKEY_client_binary_default}}
 
@@ -134,11 +136,13 @@ MYSQL_BINDIR=`dirname ${OCF_RESKEY_binary}`
 : ${OCF_RESKEY_geo_remote_IP}=""
 : ${OCF_RESKEY_booth_master_ticket}=${OCF_RESKEY_booth_master_ticket_default}
 : ${OCF_RESKEY_post_promote_script}=""
+: ${OCF_RESKEY_prm_binlog_parser_path}="`which prm_binlog_parser`"
 
 #######################################################################
 # Convenience variables
 
 MYSQL=$OCF_RESKEY_client_binary
+MYSQL_BINDIR=`dirname ${OCF_RESKEY_client_binary}`
 
 MYSQL_OPTIONS_LOCAL="-A -S $OCF_RESKEY_socket --connect_timeout=10"
 MYSQL_OPTIONS_REPL="$MYSQL_OPTIONS_LOCAL --user=$OCF_RESKEY_replication_user --password=$OCF_RESKEY_replication_passwd"
@@ -148,10 +152,13 @@ MYSQL_TOO_MANY_CONN_ERR=1040
 
 CRM_MASTER="${HA_SBIN_DIR}/crm_master -l reboot "
 HOSTNAME=`uname -n`
-CRM_ATTR="${HA_SBIN_DIR}/crm_attribute -N $HOSTNAME "
+CRM_ATTR="${HA_SBIN_DIR}/crm_attribute -N $HOSTNAME -q"
 INSTANCE_ATTR_NAME=`echo ${OCF_RESOURCE_INSTANCE}| awk -F : '{print $1}'`
-CRM_ATTR_REPL_INFO="${HA_SBIN_DIR}/crm_attribute --type crm_config --name ${INSTANCE_ATTR_NAME}_REPL_INFO -s mysql_replication"
-CRM_ATTR_REPL_STATUS="${HA_SBIN_DIR}/crm_attribute --type crm_config --name ${INSTANCE_ATTR_NAME}_REPL_STATUS -s mysql_replication"
+CRM_ATTR_REPL_INFO="${HA_SBIN_DIR}/crm_attribute --type crm_config --name ${INSTANCE_ATTR_NAME}_REPL_INFO -s mysql_replication -q "
+CRM_ATTR_REPL_STATUS="${HA_SBIN_DIR}/crm_attribute --type crm_config --name ${INSTANCE_ATTR_NAME}_REPL_STATUS -s mysql_replication -q "
+CRM_ATTR_LAST_TRX="${HA_SBIN_DIR}/crm_attribute --type crm_config --name ${INSTANCE_ATTR_NAME}_NEW_MASTER_LAST_TRX -s mysql_replication -q"
+CRM_ATTR_MASTER_CRASHED_TS="$CRM_ATTR -l reboot --name ${INSTANCE_ATTR_NAME}_master_crashed"
+CRM_ATTR_NODE_LAST_TRX_MD5="$CRM_ATTR -l reboot --name ${INSTANCE_ATTR_NAME}_last_trx_md5"
 CRM_RES="${HA_SBIN_DIR}/crm_resource"
 CRM_TICKET="${HA_SBIN_DIR}/crm_ticket"
 SSH="/usr/bin/ssh "
@@ -456,6 +463,16 @@ prevent fail-back of the master role after an initial failover.
 <content type="string" default="" />
 </parameter>
 
+<parameter name="prm_binlog_parser_path" unique="1" required="0">
+<longdesc lang="en">
+Path to the prm_binlog_parser tool that is used to publish the last trx of a new
+master after a hard crash of the previous master. The tool can be downloaded from 
+https://github.com/percona/percona-pacemaker-agents/tree/master/tools/ybinlogp
+</longdesc>
+<shortdesc lang="en">Path to the prm_binlog_parser tool</shortdesc>
+<content type="string" default="" />
+</parameter>
+
 </parameters>
 
 <actions>
@@ -580,6 +597,7 @@ get_slave_info() {
          master_user=`parse_slave_info Master_User $tmpfile`
          master_port=`parse_slave_info Master_Port $tmpfile`
          master_log_file=`parse_slave_info Master_Log_File $tmpfile`
+         relay_log_file=`parse_slave_info Relay_Log_File $tmpfile`
          master_log_pos=`parse_slave_info Read_Master_Log_Pos $tmpfile`
          slave_sql=`parse_slave_info Slave_SQL_Running $tmpfile`
          slave_io=`parse_slave_info Slave_IO_Running $tmpfile`
@@ -786,9 +804,9 @@ check_slave() {
 set_master() {
    local new_master master_log_file master_log_pos new_master_info
    local master_params new_master_log_file new_master_log_pos
-   
+  
    if [ "$glb_master_exists" ]; then
-      if [ "${#glb_remote_info}" -gt "0" ]; then
+       if [ "${#glb_remote_info}" -gt "0" ]; then
          # geo_remote_IP is defined, let's do the booth part
          
          if [ $glb_master_side -ne 0 ]; then
@@ -801,10 +819,9 @@ set_master() {
       fi
       
       if [ "${#new_master_info}" -eq "0" ]; then
-         new_master_info=`$CRM_ATTR_REPL_INFO --query  -q`
-         new_master=`echo $new_master_info | cut -d'|' -f1`
-         new_master_log_file=`echo $new_master_info | cut -d'|' -f2`
-         new_master_log_pos=`echo $new_master_info | cut -d'|' -f3`
+         new_master=`echo $glb_local_info | cut -d'|' -f1`
+         new_master_log_file=`echo $glb_local_info | cut -d'|' -f2`
+         new_master_log_pos=`echo $glb_local_info | cut -d'|' -f3`
       fi
       
       # Keep replication position
@@ -940,6 +957,27 @@ unset_master(){
    # by pre-promote notification
    unset master_host  # need to unset for get_slave_info to run
    get_slave_info
+   
+   if [ "${#OCF_RESKEY_prm_binlog_parser_path}" -gt "0" ]; then
+      
+      # First, where are the relay logs?  That will be easier when the using_multi_config 
+      # branch will be merged.  If the path is not defined, the output will be "."
+      relaylog_path=`${OCF_RESKEY_binary} --defaults-file=$OCF_RESKEY_config --verbose --help --user=$OCF_RESKEY_user | grep -e '^relay-log ' | awk '{ print $2 }'`
+      relaylog_path=`dirname $relaylog_path`
+
+      if [ "$relaylog_path" == "." ]; then
+         relaylog_path=$OCF_RESKEY_datadir
+      fi
+      
+      last_relaylog_file="$relay_log_file"
+
+      #ok now we need to find the md5 of the last trx
+      last_trx_md5=`$OCF_RESKEY_prm_binlog_parser_path ${relaylog_path}/${last_relaylog_file} | tail -n 1 | cut -d',' -f2`
+
+      if [ ! -z "$last_trx_md5" ]; then
+         $CRM_ATTR_NODE_LAST_TRX_MD5 -v $last_trx_md5
+      fi
+   fi
    
    mysql_run -Q -sw $MYSQL $MYSQL_OPTIONS_REPL \
    -e "RESET SLAVE /*!50516 ALL */;"
@@ -1179,10 +1217,23 @@ mysql_monitor() {
             if [ "$master_status_attr" != "$new_master_status_attr" ]; then
                $CRM_ATTR_REPL_STATUS -v "$new_master_status_attr"
             fi
+            
+            # Is this following a recent master crash?
+            master_crashed_ts=`$CRM_ATTR_MASTER_CRASHED_TS --query`
+            
+            if [ ! -z $master_crashed_ts ]; then
+               if [ `date +%s` -gt "$((${master_crashed_ts}+3600))" ]; then
+                  #Let's cleanup the cib
+                  $CRM_ATTR_MASTER_CRASHED_TS -D
+                  $CRM_ATTR_LAST_TRX -D
+               fi
+            fi
          fi
       else
          is_slave
          rc=$?
+         # Need to cover for crashed master... no unset_master... or always set
+         # last trx md5...
          if [ $rc -eq 0 -o "$OCF_RESKEY_CRM_meta_role" = "Slave" ]; then
             unset_master
             set_reader_attr 0
@@ -1293,7 +1344,7 @@ mysql_start_low() {
    
    if ocf_is_true "$OCF_RESKEY_enable_creation" && [ ! -d $OCF_RESKEY_datadir/mysql ] ; then
       ocf_log info "Initializing MySQL database: "
-      $MYSQL_BINDIR/mysql_install_db --datadir=$OCF_RESKEY_datadir
+      $MYSQL_SBINDIR/mysql_install_db --datadir=$OCF_RESKEY_datadir
       rc=$?
       if [ $rc -ne 0 ] ; then
          ocf_log err "Initialization failed: $rc";
@@ -1426,6 +1477,11 @@ mysql_stop() {
 
 mysql_promote() {
    local master_info
+   local master_crashed_ts
+   local log_bin_path
+   local tmpfiletrx
+   local nb_trx
+   local last_binlog_number
    
    if ( ! mysql_status err ); then
       return $OCF_NOT_RUNNING
@@ -1439,12 +1495,62 @@ mysql_promote() {
    ${CRM_ATTR_REPL_INFO} -v "$master_info"
    rm -f $master_status_file
    
+   master_crashed_ts=`$CRM_ATTR_MASTER_CRASHED_TS --query`
+            
+   if [ ! -z "$master_crashed_ts" -a "${#OCF_RESKEY_prm_binlog_parser_path}" -gt "0" ]; then
+      if [ `date +%s` -lt "$((${master_crashed_ts}+3600))" ]; then
+         # Master crashed less than 1h ago, let's publish the last trx
+         
+         # First, where are the binlogs?  That will be easier when the using_multi_config 
+         # branch will be merged.  If the path is not defined, the output will be "."
+         log_bin_path=`${OCF_RESKEY_binary} --defaults-file=$OCF_RESKEY_config --verbose --help --user=$OCF_RESKEY_user | grep -e '^log-bin ' | awk '{ print $2 }'`
+         log_bin_path=`dirname $log_bin_path`
+         
+         if [ "$log_bin_path" == "." ]; then
+            log_bin_path=$OCF_RESKEY_datadir
+         fi
+         
+         # Let's find the last binlog file
+         update_data_master_status
+         last_binlog_file="$(get_master_status File)"
+         
+         tmpfiletrx=`mktemp ${HA_RSCTMP}/trx.${OCF_RESOURCE_INSTANCE}.XXXXXX`
+         
+         ( echo -n "${last_binlog_file}@";$OCF_RESKEY_prm_binlog_parser_path ${log_bin_path}/${last_binlog_file} | tail -n 3000 ) > $tmpfiletrx
+         
+         # Do we have 3000 trx?
+         nb_trx=`cat $tmpfiletrx | wc -l`
+         if [ "$nb_trx" -lt "3000" ]; then
+            # we have less than 3000, let's try the previous file
+            nb_trx=$((3000-$nb_trx))  #remaining
+            
+            last_binlog_number=`echo $last_binlog_file | cut -d'.' -f2 | sed -ne "s/^0*\([1-9][0-9]*\)$/\1/p"`
+            last_binlog_number=$(($last_binlog_number-1))
+            
+            # re-adding the 0 padding
+            while [ "${#last_binlog_number}" -lt "6" ]; do
+                last_binlog_number="0${last_binlog_number}"
+            done
+            
+            last_binlog_file="`echo $last_binlog_file | cut -d'.' -f1`.${last_binlog_number}" 
+            if [ -e "${log_bin_path}/$last_binlog_file" ]; then
+                ( echo -n "@${last_binlog_file}@";$OCF_RESKEY_prm_binlog_parser_path ${log_bin_path}/${last_binlog_file} | tail -n $nb_trx ) >> $tmpfiletrx
+            fi
+         fi
+         
+         #now we load all that to the cib so that it reaches the other nodes
+         $CRM_ATTR_LAST_TRX -v "`cat $tmpfiletrx | tr '\n' '|'`"
+         rm -f $tmpfiletrx
+         
+      fi
+   fi
+
    set_read_only off || return $OCF_ERR_GENERIC
    
    # Existing master gets a higher-than-default master preference, so
    # the cluster manager does not shuffle the master role around
    # unnecessarily
-   $CRM_MASTER -v $((${OCF_RESKEY_max_slave_lag}+1000))
+   $CRM_MASTER -v 2147483647
    
    # A master can accept reads
    set_reader_attr 1
@@ -1469,6 +1575,12 @@ mysql_demote() {
 }
 
 mysql_notify() {
+   local master_crashed_ts last_reported_master_file_number master_status_attr
+   local last_reported_master_file last_reported_master_pos master_max_binlog_size
+   local master_score notify_resource my_resource master_crashed_ts
+   local relaylog_path last_relaylog_file last_trx_md5 binlog_file binlog_pos
+   local strip_last_reported_master_file_number strip_master_log_file_number
+   
    # If not configured as a Stateful resource, we make no sense of
    # notifications.
    if ! ocf_is_ms; then
@@ -1507,7 +1619,7 @@ mysql_notify() {
                # Let's establish the master score based on the following
                # rule.
                # score = ((file number diff)*master_max_binlog_size
-               #          + fileposdiff/10
+               #          + fileposdiff/10 + constante
                #
                # All events are at least 10 bytes so dividing by 10 doesn't reduce
                # the resolution and increases the span.
@@ -1521,10 +1633,10 @@ mysql_notify() {
                #The unset_master will return the last slave status variables.
                unset_master
                
-               last_reported_master_file_number=`echo $last_reported_master_file | cut -d'.' -f2`
-               master_log_file_number=`echo $master_log_file | cut -d'.' -f2`
+               last_reported_master_file_number=`echo $last_reported_master_file | cut -d'.' -f2 | sed -ne "s/^0*\([1-9][0-9]*\)$/\1/p"`
+               master_log_file_number=`echo $master_log_file | cut -d'.' -f2 | sed -ne "s/^0*\([1-9][0-9]*\)$/\1/p"`
                
-               master_score=$(((1000000000+\
+               master_score=$(((100000000+\
                   ($master_log_file_number-$last_reported_master_file_number)*\
                   $master_max_binlog_size+$master_log_pos-$last_reported_master_pos)/10))
                
@@ -1543,10 +1655,16 @@ mysql_notify() {
                
                $CRM_MASTER -v $master_score
                
+               # Next, we need a reminder that the master crashed and when, that will be
+               # used to publish the last trx in the promote event if we are picket
+               # as the new master.
+                           
+               $CRM_ATTR_MASTER_CRASHED_TS -v `date +%s`
+               
             fi
          fi
-         
       ;;
+      
       'post-promote')
          # The master has completed its promotion. Now is a good
          # time to check whether our replication slave is working
@@ -1564,8 +1682,72 @@ mysql_notify() {
          if [ "$master_host" = ${HOSTNAME} ]; then
             ocf_log info "This will be the new master, ignoring post-promote notification."
          else
+         
+            # Is this following a recent master crash?
+            master_crashed_ts=`$CRM_ATTR_MASTER_CRASHED_TS --query`
+            
+            if [ ! -z "$master_crashed_ts" -a "${#OCF_RESKEY_prm_binlog_parser_path}" -gt "0" ]; then
+               if [ `date +%s` -lt "$((${master_crashed_ts}+3600))" ]; then
+                  # Master crashed less than 1h ago, let's see what our last trx was.  
+                  # Since the master crashed, we didn't have the post-demote notification
+                  # so the slave may still configured if no monitor ops has run
+
+                  # if a monitor ops occurred, it should be saved in the cib
+                  last_trx_md5=`$CRM_ATTR_NODE_LAST_TRX_MD5 --query`
+                  
+                  if [ -z "$last_trx_md5" ]; then                  
+                     # no last_trx_md5 set in the cib, let's try to find it
+                     
+                     # First, where are the relay logs?  That will be easier when the using_multi_config 
+                     # branch will be merged.  If the path is not defined, the output will be "."
+                     relaylog_path=`${OCF_RESKEY_binary} --defaults-file=$OCF_RESKEY_config --verbose --help --user=$OCF_RESKEY_user | grep -e '^relay-log ' | awk '{ print $2 }'`
+                     relaylog_path=`dirname $relaylog_path`
+               
+                     if [ "$log_bin_path" == "." ]; then
+                        relaylog_path=$OCF_RESKEY_datadir
+                     fi
+               
+                     # Let's find the last binlog file
+                     get_slave_info
+                     last_relaylog_file="$relay_log_file"
+               
+                     #ok now we need to find the md5 of the last trx
+               
+                     last_trx_md5=`$OCF_RESKEY_prm_binlog_parser_path ${relaylog_path}/${last_relaylog_file} | tail -n 1 | cut -d',' -f2`
+                  fi
+
+                  if [ ! -z "$last_trx_md5" ]; then
+                     # now, let's try to find this md5 in the NEW_MASTER_LAST_TRX attribute
+                     # There maybe up to 2 binlog files in the attribute
+                     
+                     #1st file
+                     binlog_file=`$CRM_ATTR_LAST_TRX --query | cut -d'@' -f1`
+                     binlog_pos=`$CRM_ATTR_LAST_TRX --query | cut -d'@' -f2 | tr '|' '\n' | grep -A1 $last_trx_md5 | tail -n 1 | cut -d',' -f1`
+                     
+                     #found?
+                     if [ -z "$binlog_pos" ]; then
+                        #no, let's try if there's a 2nd file
+                        binlog_file=`$CRM_ATTR_LAST_TRX --query | cut -d'@' -f3`
+                        
+                        if [ -z "$binlog_file" ]; then
+                           binlog_pos=`$CRM_ATTR_LAST_TRX --query | cut -d'@' -f4 | tr '|' '\n' | grep -A1 $last_trx_md5 | tail -n 1 | cut -d',' -f1`
+                        fi
+                     fi
+                     
+                     # TODO: we could be at the end of the 2nd file so we should point to the first entry of the first
+                     # file.  Edge case, will deal with it later.
+                     
+                     # have we found something?
+                     if [ ! -z "$binlog_file" -a ! -z "$binlog_pos" ]; then
+                        # Let's overwrite the glb_local_info variable
+                        glb_local_info="`echo $glb_local_info | cut -d'|' -f1`|$binlog_file|$binlog_pos"
+                     fi
+                  fi
+               fi
+            fi
+            
             ocf_log info "Resetting replication"
-            unset_master  #Should be unset already
+            unset_master  #Should be unset already execpt if master crashed
             if [ $? -ne 0 ]; then
                return $OCF_ERR_GENERIC
             fi
@@ -1584,6 +1766,7 @@ mysql_notify() {
          fi
          return $OCF_SUCCESS
       ;;
+      
       'pre-demote')
          # Is the notification for our set
          notify_resource=`echo $OCF_RESKEY_CRM_meta_notify_demote_resource|cut -d: -f1`
@@ -1806,7 +1989,8 @@ if [ "$glb_master_exists" -eq "1" ]; then
    if [ "${#glb_remote_info}" -gt "0" ]; then
       glb_cib_master=`echo $glb_remote_info | awk '{ print $1 }' | cut -d'|' -f1`
    else
-      glb_cib_master=`$CRM_ATTR_REPL_INFO --query  -q | cut -d'|' -f1`
+      glb_local_info=`$CRM_ATTR_REPL_INFO --query  -q`
+      glb_cib_master=`echo $glb_local_info | cut -d'|' -f1`
    fi
 fi
 
