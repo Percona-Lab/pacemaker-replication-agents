@@ -103,9 +103,9 @@ int main(int argc, char** argv) {
 	MD5_Init(&c);
 	while ((ybp_next_event(bp, evbuf) >= 0) && (show_all || i < num_to_show)) {
 	    if (q_mode) {
-	    	if (debug) printf("type_code: %i pos=%llu\n",evbuf->type_code,(long long unsigned int) evbuf->offset);
+	    	if (debug) printf("type_code: %i pos=%llu\n",evbuf->type_code,evbuf->offset);
 		if (starting_offset > 0 && starting_offset > evbuf->offset) { 
-			if (debug) printf("continuing %llu > %llu\n",(long long unsigned int) starting_offset, (long long unsigned int) evbuf->offset); 
+			if (debug) printf("continuing %llu > %llu\n",starting_offset,evbuf->offset); 
 			next_position=evbuf->offset;
 			continue; 
 		}

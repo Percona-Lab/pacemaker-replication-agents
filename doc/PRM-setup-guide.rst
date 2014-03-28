@@ -211,7 +211,7 @@ Configuring MySQL
 Installation of MySQL
 =====================
 
-Install packages like you would normally do depending on the distribution you are using.  The minimal requirements for my.cnf are a unique ``server_id`` for replication, ``log-bin`` to activate the binary log and **not** ``log-slave-updates`` since this screw up the logic.  Also, make sure pid-file and socket correspond to what will be defined below for the configuration of the mysql primitive in Pacemaker.  In our example, on Centos 6 servers::
+Install packages like you would normally do depending on the distribution you are using.  The minimal requirements for my.cnf are a unique ``server_id`` for replication, ``log-bin`` to activate the binary log. If you plan to use the slave resync feature after a master crash, you'll need to enable the ``log-slave-updates`` variables. Also, make sure pid-file and socket correspond to what will be defined below for the configuration of the mysql primitive in Pacemaker.  In our example, on Centos 6 servers::
 
    [root@host-01 ~]# cat /etc/my.cnf 
    [client]
@@ -225,7 +225,7 @@ Install packages like you would normally do depending on the distribution you ar
    log-bin
    server-id=1
    pid-file=/var/lib/mysql/mysqld.pid
-
+   log-slave-updates
 
 Start Mysql manually with ``service mysql start`` or the equivalent.
 
@@ -278,6 +278,8 @@ For the sake of simplicity we start by a 2 nodes cluster.  The problem with a 2 
 This can be revisited for larger clusters.  Also, since for this example we are not configuring any stonith devices, we have to disable stonith with::
 
    crm_attribute --attr-name stonith-enabled --attr-value false
+   
+One has to realize that without stonith device may be stuck if a node is unable to complete an operation.  A simple case is a node having a VIP which has a severe storage problem and is no longer able to access the ``ip`` binary required to remove the VIP.  The kernel is still responding to the VIP but the node is effectively unable to do anything useful.  For such a case stonith devices are needed.  Stonith devices are highly recommended in production.
 
 IP configuration for replication
 --------------------------------
@@ -375,6 +377,10 @@ booth_master_ticket      Booth ticket name of the Geo DR master role, see the PR
 
 post_promote_script      A script that is called at the end of the promote operation.  It can be used for some special
                          use case like preventing failback.  See "Preventing failback" in the How to section.
+                         
+prm_binlog_parser_path   Path of the tool used by PRM to parse the binlog and relaylog. It is derived fron ybinlog developed by 
+                         Yelp. It can be found at:
+                         https://github.com/percona/percona-pacemaker-agents/tree/master/tools/ybinlogp
 
 =======================  ========================================================================================================                      
 
@@ -424,9 +430,9 @@ Reader VIP location rules
 One of the new element introduced with this solution is the addition of a transient attribute to control if a host is suitable to host a reader VIP.  The replication master are always suitable but the slave suitability is determine by the monitor operation which set the transient attribute to 1 is ok and to 0 is not.  In the MySQL primitive above, we have not set the *reader_attribute* parameter so we are using the default value "readable" for the transient attribute.  The use of the transient attribute is through a location rule which will but a score on -infinity for the VIPs to be located on unsuitable hosts.  The location rules for the reader VIPs are the following::
 
    location loc-no-reader-vip-1 reader_vip_1 \
-         rule $id="rule-no-reader-vip-1" -inf: readable eq 0
+         rule $id="rule-no-reader-vip-1" -inf: readable lt 1
    location loc-No-reader-vip-2 reader_vip_2 \
-         rule $id="rule-no-reader-vip-2" -inf: readable eq 0
+         rule $id="rule-no-reader-vip-2" -inf: readable lt 1
 
 Again, use ``crm configure edit`` to add the these rules.
 
@@ -466,9 +472,9 @@ Here's all the snippets grouped together::
    ms ms_MySQL p_mysql \
          meta master-max="1" master-node-max="1" clone-max="2" clone-node-max="1" notify="true" globally-unique="false" target-role="Master" is-managed="true"
    location loc-No-reader-vip-2 reader_vip_2 \
-         rule $id="rule-no-reader-vip-2" -inf: readable gt 0
+         rule $id="rule-no-reader-vip-2" -inf: readable lt 1
    location loc-no-reader-vip-1 reader_vip_1 \
-         rule $id="rule-no-reader-vip-1" -inf: readable gt 0
+         rule $id="rule-no-reader-vip-1" -inf: readable lt 1
    colocation writer_vip_on_master inf: writer_vip ms_MySQL:Master
    order ms_MySQL_promote_before_vip inf: ms_MySQL:promote writer_vip:start
    property $id="cib-bootstrap-options" \
@@ -616,10 +622,18 @@ Replication broken
 If you break replication by inserting a row on the save in the writeload table, the reader_vip should move away from the affected slave in around the monitor operation interval times the failcount.  Once corrected, the reader_vip should come back.
 
 
-Kill of MySQL
--------------
+Crash of master and slave resync
+--------------------------------
 
-A kill of the ``mysqld`` process, on either the master or the slave should cause Pacemaker to restart it.  If the restart are normal, there's no need for the master role to switch over.
+A crash of the ``mysqld`` process, on either the master or the slave should cause Pacemaker to restart it .  If the restart are normal, there's no need for the master role to switch over.  
+
+If the whole master server crashes, there's no option other than failing over.  In such case, PRM will detect the master crashed and will initiate the following procedure if the prm_binlog_parser tool is available and defined in the configuration.
+
+   # The best candidate for the master role is found, based on the amount of binlog downloaded from the crashed master
+   # The newly elected master publishes to the cib the binlog positions and md5 hashes of payload for last 3000 transactions in its binlog with the help of the prm_binlog_parser tool
+   # The other slaves, will use the prm_binlog_parser tool to get the md5 of the last trx in its relay log and will find the corresponding binlog file and position for the transactions published in the cib by the new master.
+   
+Note: This behavior also requires binlog XID events that are only generated with Innodb (not with MyISAM). I also currently cannot deal with "LOAD DATA INTO" operations.
 
 
 Kill of MySQL no restart
@@ -675,8 +689,6 @@ Reboot all node
 ---------------
 
 After the reboot, a master should be promoted and the other nodes should be slaves of the master.  
-
-
 
 
 ------
@@ -851,8 +863,30 @@ and add the following location rule::
 Every time the node pacemaker-2 is promote to master, it will set the attribute to 1, preventing pacemaker-1 to return to the master role.  To monitor the attribute value, use ``crm_mon -A1``.  To re-enable pacemaker-1 to the master role, you'll need to run::
 
     /usr/sbin/crm_attribute -N pacemaker-1 -n prm-no-failback -l forever -v 0
-    
-    
+
+
+Manual failover for replication
+===============================    
+
+In order to manually control replication failover, one can extend the "Preventing failback" recipe by adding the following rules to the cib::
+   
+   location loc-allowed-master ms_MySQL \
+      rule $id="rule-allowed-master" $role="master" -inf: p_mysql_master_allowed eq 1
+      
+and then, the node or nodes, allowed to be master will have::
+
+   crm_attribute -N pacemaker-1 -n p_mysql_master_allowed -l forever -v 1
+   
+and the other one::
+
+   crm_attribute -N pacemaker-2 -n p_mysql_master_allowed -l forever -v 0
+   crm_attribute -N pacemaker-3 -n p_mysql_master_allowed -l forever -v 0
+
+If at some point, the master role need to be moved to the pacemaker-2 node, then, simply run::
+
+      crm_attribute -N pacemaker-2 -n p_mysql_master_allowed -l forever -v 1
+      crm_attribute -N pacemaker-1 -n p_mysql_master_allowed -l forever -v 0
+      
 ---------------
 Advanced topics
 ---------------
