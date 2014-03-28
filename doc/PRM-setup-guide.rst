@@ -490,6 +490,31 @@ Here's all the snippets grouped together::
 
 You'll notice toward the end, the ``p_mysql_REPL_INFO`` attribute (the value may differ) that correspond to the master status when it has been promoted to master.  
  
+--------
+Behavior
+--------
+
+Crash of master
+===============
+
+If the node where the master was running is still up, PRM will try to restart it once per hour, this is the best way of insuring no data is lost.  
+
+If it keeps crashing or if the whole master server crashed, a failover will occur.  In such case, PRM will detect the master crashed and will initiate the following procedure if the prm_binlog_parser tool is available and defined in the configuration.
+
+   # The best candidate for the master role is found, based on the amount of binlog downloaded from the crashed master
+   # The newly elected master publishes to the cib the binlog positions and md5 hashes of payload for last 3000 transactions in its binlog with the help of the prm_binlog_parser tool
+   # The other slaves, will use the prm_binlog_parser tool to get the md5 of the last trx in its relay log and will find the corresponding binlog file and position for the transactions published in the cib by the new master.
+   
+Note: This behavior also requires binlog XID events that are only generated with Innodb (not with MyISAM). I also currently cannot deal with "LOAD DATA INTO" operations.
+
+
+Determining the best master candidate
+=====================================
+
+During normal operation, when there's a failover, all slaves are at the same point so that's not critical. It is different when the master crashed, slaves may not all be at the same point and it is very important to pick the most up to date one.  In order to achieve this, the master publishes its current master status at every monitor operation and when PRM needs to determine who's the best candidate, the score will be calculated like this::
+   
+   master_score=100000000 + ((current_slave_master_log_file_number - last_reported_master_log_file_number) * master_max_binlog_size +
+               current_slave_master_log_pos - last_reported_master_log_pos)/10
 
 -------------------------
 Useful Pacemaker commands
@@ -622,18 +647,12 @@ Replication broken
 If you break replication by inserting a row on the save in the writeload table, the reader_vip should move away from the affected slave in around the monitor operation interval times the failcount.  Once corrected, the reader_vip should come back.
 
 
-Crash of master and slave resync
---------------------------------
+Crash of master
+---------------
 
 A crash of the ``mysqld`` process, on either the master or the slave should cause Pacemaker to restart it .  If the restart are normal, there's no need for the master role to switch over.  
 
-If the whole master server crashes, there's no option other than failing over.  In such case, PRM will detect the master crashed and will initiate the following procedure if the prm_binlog_parser tool is available and defined in the configuration.
 
-   # The best candidate for the master role is found, based on the amount of binlog downloaded from the crashed master
-   # The newly elected master publishes to the cib the binlog positions and md5 hashes of payload for last 3000 transactions in its binlog with the help of the prm_binlog_parser tool
-   # The other slaves, will use the prm_binlog_parser tool to get the md5 of the last trx in its relay log and will find the corresponding binlog file and position for the transactions published in the cib by the new master.
-   
-Note: This behavior also requires binlog XID events that are only generated with Innodb (not with MyISAM). I also currently cannot deal with "LOAD DATA INTO" operations.
 
 
 Kill of MySQL no restart
