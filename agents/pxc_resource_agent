@@ -86,6 +86,7 @@ use vars qw { @ARGV %ENV $LOG_LEVEL };
 #####
 
 # $LOG_LEVEL = LOG_DEBUG;
+# $LOG_LEVEL = LOG_DEBUG;
 $LOG_LEVEL = LOG_INFO;
 
 my $log = "/tmp/pxc_resource_agent.log";
@@ -150,7 +151,7 @@ sub unix_exec_ok {
 }
 
 sub get_hostname {
-	unix_exec_string( 'get_hostname', CRM_NODE . ' -n' );
+	unix_exec_string( 'get_hostname', 'uname -n' );
 }
 
 
@@ -175,20 +176,20 @@ sub crm_attr_set {
 	my( $name, $value ) = @_;
 
 	return unix_exec_ok( 'crm attr set', 
-		CRM_ATTR . " -l reboot --name $name-" . $ENV{'OCF_RESOURCE_INSTANCE'} . " -v $value"
+		CRM_ATTR . " -l reboot --name $name-" . (split /:/, $ENV{'OCF_RESOURCE_INSTANCE'})[0] . " -v $value"
 	);
 }
 sub crm_attr_delete {
 	my( $name ) = @_;
 	return unix_exec_ok( 'crm attr delete', 
-		CRM_ATTR . " -l reboot --name $name-" . $ENV{'OCF_RESOURCE_INSTANCE'} . " --delete"
+		CRM_ATTR . " -l reboot --name $name-" . (split /:/, $ENV{'OCF_RESOURCE_INSTANCE'})[0] . " --delete"
 	);
 }
 sub crm_attr_get {
 	my( $name ) = @_;
 	
 	return unix_exec_string( 'crm attr get', 
-		CRM_ATTR . " -l reboot --name $name-" . $ENV{'OCF_RESOURCE_INSTANCE'} . " --query -q"
+		CRM_ATTR . " -l reboot --name $name-" . (split /:/, $ENV{'OCF_RESOURCE_INSTANCE'})[0] . " --query -q"
 	);
 }
 
@@ -196,7 +197,8 @@ sub crm_attr_get {
 sub cib_query_attribute {
 	my( $name ) = @_;
 	
-	my $cmd = CIBADMIN . ' --query --xpath "//status/node_state/transient_attributes/*/nvpair[@name = \"' . $name . '-' . $ENV{'OCF_RESOURCE_INSTANCE'} . '\"]"';
+	my $cmd = CIBADMIN . ' --query --xpath "//status/node_state/transient_attributes/*/nvpair[@name = \"' 
+                      . $name . '-' . (split /:/, $ENV{'OCF_RESOURCE_INSTANCE'})[0] . '\"]"';
 
 	debug( "cibadmin call: $cmd" );
 	my @output = `$cmd`;
@@ -318,7 +320,8 @@ END
 sub pxc_validate {
 	# Check that all the executables I expect are in the the PATH
 	my $rc = OCF_SUCCESS;
-	foreach my $binary ( CRM_MASTER_CLI, CRM_ATTR, CRM_NODE, CIBADMIN, MYSQL_CLI, SERVICE_CLI, MYSQLD_SAFE ) {
+	foreach my $binary ( CRM_MASTER_CLI, CRM_ATTR, CRM_NODE, CIBADMIN, MYSQL_CLI, 
+                        SERVICE_CLI, MYSQLD_SAFE ) {
 		unless( unix_exec_ok( 'test_binary', "which $binary")) {
 			error( "Could not find $binary in PATH" );
 			$rc = OCF_ERR_INSTALLED;
@@ -328,8 +331,10 @@ sub pxc_validate {
 	
 	# $OCF_SUCCESS — all is well, the configuration is valid and usable.
 	# $OCF_ERR_CONFIGURED — the user has misconfigured the resource.
-	# $OCF_ERR_INSTALLED — the resource has possibly been configured correctly, but a vital component is missing on the node where validate-all is being executed.
-	# $OCF_ERR_PERM — the resource is configured correctly and is not missing any required components, but is suffering from a permission issue (such as not being able to create a necessary file).
+	# $OCF_ERR_INSTALLED — the resource has possibly been configured correctly, but a 
+   # vital component is missing on the node where validate-all is being executed.
+	# $OCF_ERR_PERM — the resource is configured correctly and is not missing any 
+   # required components, but is suffering from a permission issue (such as not being able to create a necessary file).
 	
 	# Check RA options ok
 	return OCF_ERR_CONFIGURED unless -d $ENV{'OCF_RESKEY_datadir'};
@@ -465,7 +470,8 @@ sub pxc_bootstrap {
 	my $timeout = $ENV{'OCF_RESKEY_bootstrap_timeout'};
 	my $seqnos = cib_query_attribute( 'pxc_seqno' );
 	while( keys %$seqnos < $ENV{'OCF_RESKEY_CRM_meta_clone_max'} and $timeout > 0 ) {
-		info( keys( %$seqnos ) . " out of " . $ENV{'OCF_RESKEY_CRM_meta_clone_max'} . " have submitted GTIDs, waiting for the rest... ($timeout s)");
+		info( keys( %$seqnos ) . " out of " . $ENV{'OCF_RESKEY_CRM_meta_clone_max'} . 
+                    " have submitted GTIDs, waiting for the rest... ($timeout s)");
 		sleep 1;
 		$timeout--;
 		$seqnos = cib_query_attribute( 'pxc_seqno' );
