@@ -5,7 +5,7 @@ node pacemaker-2 \
 node pacemaker-3 \
         attributes p_mysql_mysql_master_IP="172.30.212.3"
 primitive p_mysql ocf:percona:mysql_prm \
-        params config="/etc/mysql/my.cnf" pid="/var/lib/mysql/mysqld.pid" socket="/var/run/mysqld/mysqld.sock" replication_user="repl_user" replication_passwd="WhatAPassword" test_user="test_user" test_passwd="test_pass" max_slave_lag="15" evict_outdated_slaves="false" binary="/usr/sbin/mysqld" \
+        params config="/etc/mysql/my.cnf" pid="/var/lib/mysql/mysqld.pid" socket="/var/run/mysqld/mysqld.sock" replication_user="repl_user" replication_passwd="WhatAPassword" test_user="test_user" test_passwd="test_pass" max_slave_lag="15" evict_outdated_slaves="false" binary="/usr/sbin/mysqld" async_stop="1" \
         op monitor interval="5s" role="Master" timeout="30s" OCF_CHECK_LEVEL="1" \
         op monitor interval="2s" role="Slave" timeout="30s" OCF_CHECK_LEVEL="1" \
         op start interval="0" timeout="900s" \
