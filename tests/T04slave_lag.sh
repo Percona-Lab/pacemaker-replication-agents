@@ -65,7 +65,7 @@ EOF
     check_slaves $master
     check_VIPs -u $master 
     if [ "$?" -eq 0 ]; then
-        echo "VIPs are not all on the master"
+        echo "VIPs are not all on the master (may be normal if using RBR)"
         print_result "$0" $PRM_FAIL
     fi
 

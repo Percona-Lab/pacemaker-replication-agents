@@ -2,9 +2,9 @@
 # test scripts.
 
 # ssh commands to connect to the nodes
-SSH1="ssh -p 22222 root@10.2.2.100"
-SSH2="ssh -p 22223 root@10.2.2.100"
-SSH3="ssh -p 22224 root@10.2.2.100"
+SSH1="ssh root@10.3.1.1"
+SSH2="ssh root@10.3.1.2"
+SSH3="ssh root@10.3.1.3"
 
 # MySQL command to connect locally
 MYSQL='mysql -B '
