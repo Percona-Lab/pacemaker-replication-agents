@@ -22,7 +22,7 @@
 # An example usage in /etc/ha.d/haresources:
 #       node1  10.0.0.170 mysql
 #
-# Version: 20140627115410
+# Version: 20140729171942
 #
 # See usage() function below for more details...
 #
@@ -655,7 +655,7 @@ check_slave() {
          set_reader_attr 0
          
          #Since replication is broken, not suitable to be a master
-         $CRM_MASTER -v 0
+         $CRM_MASTER -v -INF
          
          exit $OCF_SUCCESS
          
@@ -730,7 +730,9 @@ check_slave() {
          
          # Remove reader vip
          set_reader_attr 0
-         $CRM_MASTER -v 0
+         
+         # If sql is not running, can't be a master
+         $CRM_MASTER -v -INF   
          
          # Check that the flock tool exists first
          if type flock &>/dev/null; then
