@@ -23,7 +23,7 @@
 # An example usage in /etc/ha.d/haresources:
 #       node1  10.0.0.170 mysql
 #
-# Version: 20140204131153
+# Version: 20140801093606
 #
 # See usage() function below for more details...
 #
@@ -96,6 +96,7 @@ OCF_RESKEY_reader_attribute_default="readable"
 OCF_RESKEY_reader_failcount_default="1"
 OCF_RESKEY_backup_lockfile_default="/var/lock/innobackupex"
 OCF_RESKEY_booth_master_ticket_default="ticketMaster"
+OCF_RESKEY_async_stop_default=0
 
 : ${OCF_RESKEY_binary=${OCF_RESKEY_binary_default}}
 MYSQL_BINDIR=`dirname ${OCF_RESKEY_binary}`
@@ -135,6 +136,7 @@ MYSQL_BINDIR=`dirname ${OCF_RESKEY_binary}`
 : ${OCF_RESKEY_geo_remote_IP}=""
 : ${OCF_RESKEY_booth_master_ticket}=${OCF_RESKEY_booth_master_ticket_default}
 : ${OCF_RESKEY_post_promote_script}=""
+: ${OCF_RESKEY_async_stop=${OCF_RESKEY_async_stop_default}}
 
 #######################################################################
 # Convenience variables
@@ -156,6 +158,8 @@ CRM_ATTR_REPL_STATUS="${HA_SBIN_DIR}/crm_attribute --type crm_config --name ${IN
 CRM_RES="${HA_SBIN_DIR}/crm_resource"
 CRM_TICKET="${HA_SBIN_DIR}/crm_ticket"
 SSH="/usr/bin/ssh "
+ASYNC_STOP_WITNESS_FILE="${HA_RSCTMP}/stop_${INSTANCE_ATTR_NAME}"
+OCF_STOPPING=100  #custom error code for async_stop
 
 #######################################################################
 
@@ -455,6 +459,18 @@ prevent fail-back of the master role after an initial failover.
 <content type="string" default="" />
 </parameter>
 
+<parameter name="async_stop" unique="0" required="0">
+<longdesc lang="en">
+If set to true, PRM will not wait for MySQL to stop after sending the 
+SIGTERM signal.  This can be useful to speed up failover when a server has a 
+large number of dirty pages and takes a long time to shutdown, or worse, receives
+a SIGKILL after the stop timeout.  The main drawback is that if PRM wants to restart
+MySQL before it completed its shutdown, the operation will error out.
+</longdesc>
+<shortdesc lang="en">Asynchronous stop of MySQL</shortdesc>
+<content type="boolean" default="${OCF_RESKEY_async_stop_default}" />
+</parameter>
+
 </parameters>
 
 <actions>
@@ -608,7 +624,7 @@ check_slave() {
          set_reader_attr 0
          
          #Since replication is broken, not suitable to be a master
-         $CRM_MASTER -v 0
+         $CRM_MASTER -v -INF
          
          exit $OCF_SUCCESS
          
@@ -680,7 +696,7 @@ check_slave() {
          
          # Remove reader vip
          set_reader_attr 0
-         $CRM_MASTER -v 0
+         $CRM_MASTER -v -INF
          
          # Check that the flock tool exists first
          if type flock &>/dev/null; then
@@ -1079,11 +1095,29 @@ mysql_validate() {
    true
 }
 
+# Return the status of mysqld
+# $1 the loglevel to use (mandatory)
+# $2 Override async_stop if 1, default to 0
 mysql_status() {
    local last_restart_ts
+   local kill_exit_code
+   local witness_pid
+   local override_async_stop
    
+   override_async_stop=0
+   
+   if [ -n $2 ]; then
+      override_async_stop=$2
+   fi
+ 
    if [ ! -e $OCF_RESKEY_pid ]; then
       ocf_log $1 "MySQL is not running"
+      
+      if [ -e $ASYNC_STOP_WITNESS_FILE ]; then
+         # MySQL is stopped and there's a witness file, cleanup
+         rm -f $ASYNC_STOP_WITNESS_FILE
+      fi      
+      
       return $OCF_NOT_RUNNING;
    fi
    
@@ -1093,9 +1127,34 @@ mysql_status() {
    else
       kill -s 0 $pid >/dev/null 2>&1
    fi
+
+   kill_exit_code=$?
    
-   if [ $? -eq 0 ]; then
-      return $OCF_SUCCESS;
+   if [ "$OCF_RESKEY_async_stop" -eq "1" -a \
+         -e $ASYNC_STOP_WITNESS_FILE ]; then
+         
+      # Async stop seems to be in progress
+      witness_pid=`cat $ASYNC_STOP_WITNESS_FILE | grep pid | cut -d':' -f2`
+      
+      if [ $kill_exit_code -eq 0 -a $witness_pid -eq $pid ]; then
+         
+         # Should we lie or tell the truth
+         if [ "$override_async_stop" -eq "0" ]; then
+            # we lie
+            # still running but because of async, we report stopped
+            return $OCF_NOT_RUNNING
+         else
+            # we tell the truth
+            return $OCF_STOPPING #custom error code
+         fi
+      else
+         # That shouldn't happen execpt if SIGKILL, cleanup
+         rm -f $ASYNC_STOP_WITNESS_FILE
+      fi
+   fi
+   
+   if [ $kill_exit_code -eq 0 ]; then
+      return $OCF_SUCCESS
    else
       ocf_log $1 "MySQL not running: removing old PID file"
       rm -f $OCF_RESKEY_pid
@@ -1113,7 +1172,7 @@ mysql_status() {
             if [[ ! -z $last_crash_ts ]]; then
                if [ `date +%s` -lt "$((${last_crash_ts}+3600))" ]; then
                   # too soon, multiple crash, let's error out
-                  return $OCF_NOT_RUNNING;
+                  return $OCF_NOT_RUNNING
                fi
             fi
             
@@ -1129,7 +1188,7 @@ mysql_status() {
             return $rc
          fi
       fi
-      return $OCF_NOT_RUNNING;
+      return $OCF_NOT_RUNNING
    fi
 }
 
@@ -1219,6 +1278,7 @@ mysql_monitor() {
 
 # Start MySQL in the master-slave context
 mysql_start() {
+   local current_status
    
    if ocf_is_ms; then
       # Initialize the ReaderVIP attribute, monitor will enable it
@@ -1227,11 +1287,19 @@ mysql_start() {
       # set master_score to 0 in case mysql crashes on startup
       $CRM_MASTER -v 0
    fi
-   
-   mysql_status info
-   if [ $? = $OCF_SUCCESS ]; then
-      ocf_log info "MySQL already running"
-      return $OCF_SUCCESS
+
+   mysql_status info 1   # Adding 2nd param here to get the true state in case
+                        # async_stop is used
+   current_status=$?
+   if [ "$current_status" = "$OCF_SUCCESS" ]; then   
+     ocf_log info "MySQL already running"
+     return $OCF_SUCCESS
+   fi
+
+   # Is MySQL still stopping, OCF_STOPPING is a custom error code
+   if [ "$current_status" = "$OCF_STOPPING" ]; then
+      ocf_log err "MySQL asked to start while still stopping"
+      return $OCF_ERR_GENERIC
    fi
    
    mysql_start_low
@@ -1269,7 +1337,8 @@ mysql_start() {
    fi
    
    # Initial monitor action
-   if [ -n "$OCF_RESKEY_test_table" -a -n "$OCF_RESKEY_test_user" -a -n "$OCF_RESKEY_test_passwd" ]; then
+   if [ -n "$OCF_RESKEY_test_table" -a -n "$OCF_RESKEY_test_user" \
+        -a -n "$OCF_RESKEY_test_passwd" ]; then
       OCF_CHECK_LEVEL=10
    fi
    mysql_monitor
@@ -1392,6 +1461,19 @@ mysql_stop() {
       ocf_log err "MySQL couldn't be stopped"
       return $OCF_ERR_GENERIC
    fi
+   
+   if [ "$OCF_RESKEY_async_stop" -eq "1" ]; then
+      #Ok, MySQL is stopping and the async_stop option is set, just put the
+      #pid and a timestamp in the witness file and return
+   
+      echo "pid:$pid" > $ASYNC_STOP_WITNESS_FILE
+      echo "ts:`date +%s`" >> $ASYNC_STOP_WITNESS_FILE
+      
+      #Don't know yet why the ts, just seems useful for debugging for now
+      ocf_log info "MySQL async stopped";
+      return $OCF_SUCCESS
+   fi
+
    # stop waiting
    shutdown_timeout=15
    if [ -n "$OCF_RESKEY_CRM_meta_timeout" ]; then
@@ -1450,7 +1532,9 @@ mysql_promote() {
    # A master can accept reads
    set_reader_attr 1
    
-   if [ "${#OCF_RESKEY_post_promote_script}" -gt "0" -a -x "${OCF_RESKEY_post_promote_script}" -a ! -L "${OCF_RESKEY_post_promote_script}" ]; then
+   if [ "${#OCF_RESKEY_post_promote_script}" -gt "0" -a \
+        -x "${OCF_RESKEY_post_promote_script}" -a \
+        ! -L "${OCF_RESKEY_post_promote_script}" ]; then
       ${OCF_RESKEY_post_promote_script}
    fi
    
