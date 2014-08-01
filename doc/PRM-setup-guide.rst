@@ -381,6 +381,10 @@ post_promote_script      A script that is called at the end of the promote opera
 prm_binlog_parser_path   Path of the tool used by PRM to parse the binlog and relaylog. It is derived fron ybinlog developed by 
                          Yelp. It can be found at:
                          https://github.com/percona/percona-pacemaker-agents/tree/master/tools/ybinlogp
+                         
+async_stop               Cause the agent not to wait for MySQL to complete its shutdown procedure before failing over.  Useful
+                         to speed up failover when there're a lot of Innodb dirty pages to be flushed to disk.  For now, the
+                         is 0, disabled, but it may eventually default to 1, enabled.
 
 =======================  ========================================================================================================                      
 
