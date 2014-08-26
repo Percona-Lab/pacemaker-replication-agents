@@ -22,7 +22,7 @@
 # An example usage in /etc/ha.d/haresources:
 #       node1  10.0.0.170 mysql
 #
-# Version: 20140729171942
+# Version: 20140826152356
 #
 # See usage() function below for more details...
 #
@@ -1217,7 +1217,7 @@ mysql_status() {
       
       # This is abnormal, is this host the master defined in the cib?
       # Also confirm it succeed in starting with the socket file
-      if [ "$glb_master_exists" -eq "1" ]; then
+      if [ "$glb_master_exists" -eq "1" -a "$OCF_RESKEY_try_restart_crashed_master" -eq "1" ]; then
          if [ "$glb_cib_master" =  $(get_local_ip) -a -e "$OCF_RESKEY_socket" ]; then
             # This is the master, let's give it a change to restart
             # that will allow the slaves a better chance to sync but we
