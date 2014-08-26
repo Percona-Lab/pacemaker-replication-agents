@@ -54,6 +54,7 @@
 #   OCF_RESKEY_booth_master_ticket
 #   OCF_RESKEY_post_promote_script
 #   OCF_RESKEY_prm_binlog_parser_path
+#   OCF_RESKEY_try_restart_crashed_master
 
 #######################################################################
 # Initialization:
@@ -98,6 +99,7 @@ OCF_RESKEY_reader_failcount_default="1"
 OCF_RESKEY_backup_lockfile_default="/var/lock/innobackupex"
 OCF_RESKEY_booth_master_ticket_default="ticketMaster"
 OCF_RESKEY_async_stop_default=0
+OCF_RESKEY_try_restart_crashed_master_default=1
 
 : ${OCF_RESKEY_binary=${OCF_RESKEY_binary_default}}
 MYSQL_SBINDIR=`dirname ${OCF_RESKEY_binary}`
@@ -140,6 +142,7 @@ MYSQL_SBINDIR=`dirname ${OCF_RESKEY_binary}`
 : ${OCF_RESKEY_prm_binlog_parser_path}="`which prm_binlog_parser`"
 
 : ${OCF_RESKEY_async_stop=${OCF_RESKEY_async_stop_default}}
+: ${OCF_RESKEY_try_restart_crashed_master=${OCF_RESKEY_try_restart_crashed_master_default}}
 
 #######################################################################
 # Convenience variables
@@ -488,6 +491,17 @@ MySQL before it completed its shutdown, the operation will error out.
 </longdesc>
 <shortdesc lang="en">Asynchronous stop of MySQL</shortdesc>
 <content type="boolean" default="${OCF_RESKEY_async_stop_default}" />
+</parameter>
+
+<parameter name="try_restart_crashed_master" unique="0" required="0">
+<longdesc lang="en">
+If set to true, PRM will try to restart a failed master in place instead of promoting 
+another node.  This can help recover untransmitted binary logs.  However, if you have
+a large database that takes a long time to recovery, this may not be a good option
+for you.
+</longdesc>
+<shortdesc lang="en">Try restarting a crashed master</shortdesc>
+<content type="boolean" default="${OCF_RESKEY_try_restart_crashed_master_default}" />
 </parameter>
 
 </parameters>
