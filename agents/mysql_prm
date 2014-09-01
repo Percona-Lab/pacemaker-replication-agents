@@ -22,7 +22,7 @@
 # An example usage in /etc/ha.d/haresources:
 #       node1  10.0.0.170 mysql
 #
-# Version: 20140826152356
+# Version: 20140901092406
 #
 # See usage() function below for more details...
 #
@@ -139,7 +139,7 @@ MYSQL_SBINDIR=`dirname ${OCF_RESKEY_binary}`
 : ${OCF_RESKEY_geo_remote_IP}=""
 : ${OCF_RESKEY_booth_master_ticket}=${OCF_RESKEY_booth_master_ticket_default}
 : ${OCF_RESKEY_post_promote_script}=""
-: ${OCF_RESKEY_prm_binlog_parser_path}="`which prm_binlog_parser`"
+: ${OCF_RESKEY_prm_binlog_parser_path}="`which prm_binlog_parser` 2> /dev/null"
 
 : ${OCF_RESKEY_async_stop=${OCF_RESKEY_async_stop_default}}
 : ${OCF_RESKEY_try_restart_crashed_master=${OCF_RESKEY_try_restart_crashed_master_default}}
