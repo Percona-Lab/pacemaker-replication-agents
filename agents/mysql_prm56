@@ -869,7 +869,7 @@ unset_master(){
       rc=$?
       
       # Is the slave_io thread running?
-      if [ "$slave_io" != 'No' ]; then
+      if [ "$slave_io" != 'Yes' ]; then
          ocf_log info "Slave IO thread not running, master likely dead or stopped"
          break;
       fi
