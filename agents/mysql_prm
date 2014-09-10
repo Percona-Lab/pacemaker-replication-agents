@@ -2039,6 +2039,18 @@ if [ $rc -ne 0 ]; then
    esac
 fi
 
+# We check if there is a location constraint against this node
+# where $OCF_RESOURCE_INSTANCE should not be running here i.e.
+# -INFINITY score, if so we ignore monitor call for this node
+contrnt=$(cibadmin --query --obj_type constraints\
+   |awk "/rsc=\"$OCF_RESOURCE_INSTANCE\"/,/<\/rsc_location/"\
+   |awk '/score="-INFINITY"/,/<\/rule/'\
+   |egrep "expression attribute=\"#uname\".*operation=\"eq\".*value=\"$HOSTNAME\"" 2> /dev/null)
+
+if [ "$?" -eq "0" ]; then
+   exit $OCF_SUCCESS
+fi
+
 #Global info missing from OCF_RESKEY
 resources=`$CRM_RES --list`
 
