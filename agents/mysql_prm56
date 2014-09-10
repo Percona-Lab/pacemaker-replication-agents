@@ -885,7 +885,7 @@ unset_master(){
       rc=$?
       
       # Is the slave_io thread running?
-      if [ "$slave_io" != 'No' ]; then
+      if [ "$slave_io" != 'Yes' ]; then
          ocf_log info "Slave IO thread not running, master likely dead or stopped"
          break;
       fi
@@ -1855,6 +1855,18 @@ if [ $rc -ne 0 ]; then
    esac
 fi
 
+# We check if there is a location constraint against this node
+# where $OCF_RESOURCE_INSTANCE should not be running here i.e.
+# -INFINITY score, if so we ignore monitor call for this node
+contrnt=$(cibadmin --query --obj_type constraints\
+   |awk "/rsc=\"$OCF_RESOURCE_INSTANCE\"/,/<\/rsc_location/"\
+   |awk '/score="-INFINITY"/,/<\/rule/'\
+   |egrep "expression attribute=\"#uname\".*operation=\"eq\".*value=\"$HOSTNAME\"" 2> /dev/null)
+
+if [ "$?" -eq "0" ]; then
+   exit $OCF_SUCCESS
+fi
+
 #Global info missing from OCF_RESKEY
 resources=`$CRM_RES --list`
 # now we need the master-slave clone set name, need to walk around limitations
@@ -1875,13 +1887,13 @@ glb_master_side=$?
 if [ "${#OCF_RESKEY_geo_remote_IP}" -gt "0" -a $glb_master_side -ne 0 ]; then
    # geo_remote_IP is defined, let's query the remote side
    # the variable content will be like: pacemaker-1-1|binlog.000156|107 1
-   glb_remote_info=`$SSH $OCF_RESKEY_geo_remote_IP -l root "$CRM_ATTR_REPL_INFO --query  -q;$CRM_RES --list | grep -A2 $glb_master_resource | grep -c Masters"`
-   glb_master_exists=`echo $glb_remote_info | awk '{ print $NF }'`
+   glb_remote_info=`$SSH $OCF_RESKEY_geo_remote_IP -l root "$CRM_ATTR_REPL_INFO --query  -q | tr '\n' ' ';$CRM_RES --list | grep -A2 $glb_master_resource | egrep -c 'Master[^\/]'"`
+   glb_master_exists=`echo $glb_remote_info | awk '{ print $2 }'`
    if [[ -z "$glb_master_exists" ]]; then
       glb_master_exists=0
    fi
 else
-   glb_master_exists=`echo "$resources" | grep -A2 $glb_master_resource | grep -c Masters`
+   glb_master_exists=`echo "$resources" | grep -A2 $glb_master_resource | egrep -c 'Master[^\/]'`
 fi
 
 if [ "$glb_master_exists" -eq "1" ]; then
