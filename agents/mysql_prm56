@@ -1888,7 +1888,7 @@ if [ "${#OCF_RESKEY_geo_remote_IP}" -gt "0" -a $glb_master_side -ne 0 ]; then
    # geo_remote_IP is defined, let's query the remote side
    # the variable content will be like: pacemaker-1-1|binlog.000156|107 1
    glb_remote_info=`$SSH $OCF_RESKEY_geo_remote_IP -l root "$CRM_ATTR_REPL_INFO --query  -q | tr '\n' ' ';$CRM_RES --list | grep -A2 $glb_master_resource | egrep -c 'Master[^\/]'"`
-   glb_master_exists=`echo $glb_remote_info | awk '{ print $2 }'`
+   glb_master_exists=`echo $glb_remote_info | awk '{ print $NF }'`
    if [[ -z "$glb_master_exists" ]]; then
       glb_master_exists=0
    fi
