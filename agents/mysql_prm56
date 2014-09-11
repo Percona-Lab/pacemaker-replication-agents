@@ -993,12 +993,12 @@ is_master_side() {
    
    if [ "${#OCF_RESKEY_geo_remote_IP}" -gt "0" ]; then
       #Try the new format
-      crmTicketRet=`$CRM_TICKET --info 2> /dev/null`
-      if [ "$?" -ne "0" ]; then
+      crmTicketRet=`file $CRM_TICKET | grep -c 'Bourne-Again shell script'`
+      if [ "$crmTicketRet" -eq "1" ]; then
          # got an error, we assume the old format
          ticket=`$CRM_TICKET -t $OCF_RESKEY_booth_master_ticket -Q | grep -c 'true'`
       else
-         ticket=`echo $crmTicketRet | grep $OCF_RESKEY_booth_master_ticket | awk '{ print $2 }' | grep -c granted`
+         ticket=`$CRM_TICKET --info | grep $OCF_RESKEY_booth_master_ticket | awk '{ print $2 }' | grep -c granted`
       fi
       
       if [ "$ticket" -eq "1" ]; then
