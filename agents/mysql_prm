@@ -821,7 +821,7 @@ check_slave() {
       
       # An empty status could happen when a master is demote in a
       # geo DR setup, let's check
-      if [ $MYSQL_LAST_ERR -eq 0 -a $glb_master_side -eq 1 ]; then
+      if [ $MYSQL_LAST_ERR -eq 0 -a $glb_master_exists -eq 1 ]; then
          # This is not the master side, let's try to setup the slave
          # No need to unset the master since slave status is empty
          set_reader_attr 0
