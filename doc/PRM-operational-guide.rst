@@ -358,8 +358,8 @@ Correcting frequent reader VIP movements in VMs
 In virtual environments, you will often find some instabilities with the reader VIPs causing rather frequent VIP movements, even on nearly idle clusters.  The source of thos VIP movements is the clock scew adjustements that causes MySQL to return for a short time an abnormally high second behind master value on a slave.  To correct this behavior, you can use the ``reader_failcount`` parameter.  This parameter forces Pacemaker to fail a number of times, depending on the setting value, because moving the VIP.  A small value, 2 or 3, is sufficient to suppress the behavior.  Make sure that the location rules you use for the reader VIPs are using "gt" and not "eq" like this::
 
    location loc-no-reader-vip-1 reader_vip_1 \
-         rule $id="rule-no-reader-vip-1" -inf: readable gt 0
+         rule $id="rule-no-reader-vip-1" -inf: readable lt 1
    location loc-No-reader-vip-2 reader_vip_2 \
-         rule $id="rule-no-reader-vip-2" -inf: readable gt 0
+         rule $id="rule-no-reader-vip-2" -inf: readable lt 1
 
 Since the domain of values for readable will be in the [0, reader_failcount] interval. 
