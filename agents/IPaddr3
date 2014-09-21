@@ -785,6 +785,9 @@ set_clone_count() {
 
     curr_attr_value=$(get_clone_count)
     next_attr_value=`cat $IP_CIP_FILE | awk -F, '{print NF}'`
+    if [ -z "$next_attr_value" ]; then
+      next_attr_value=0
+    fi
     if [ "$curr_attr_value" -ne "$next_attr_value" ]; then
         ${HA_SBIN_DIR}/crm_attribute -N $HOSTNAME -l reboot --name ${INSTANCE_ATTR_NAME}_clone_count -v $next_attr_value
     fi
