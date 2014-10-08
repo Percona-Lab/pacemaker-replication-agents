@@ -1,8 +1,6 @@
 #!/bin/sh
 #
-#	$Id: IPaddr2.in,v 1.24 2006/08/09 13:01:54 lars Exp $
-#
-#       OCF Resource Agent compliant IPaddr2 script.
+#       OCF Resource Agent compliant IPaddr3 script.
 #
 # 	Based on work by Tuomo Soini, ported to the OCF RA API by Lars
 # 	Marowsky-Brée. Implements Cluster Alias IP functionality too.
@@ -73,7 +71,7 @@ SENDARP=$HA_BIN/send_arp
 FINDIF=$HA_BIN/findif
 VLDIR=$HA_RSCTMP
 SENDARPPIDDIR=$HA_RSCTMP
-CIP_lockfile=$HA_RSCTMP/IPaddr2-CIP-${OCF_RESKEY_ip}
+CIP_lockfile=$HA_RSCTMP/IPaddr3-CIP-${OCF_RESKEY_ip}
 HOSTNAME=`uname -n`
 INSTANCE_ATTR_NAME=`echo ${OCF_RESOURCE_INSTANCE}| awk -F : '{print $1}'`
 #######################################################################
@@ -82,7 +80,7 @@ meta_data() {
 	cat <<END
 <?xml version="1.0"?>
 <!DOCTYPE resource-agent SYSTEM "ra-api-1.dtd">
-<resource-agent name="IPaddr2">
+<resource-agent name="IPaddr3">
 <version>1.0</version>
 
 <longdesc lang="en">
@@ -272,7 +270,7 @@ ip_init() {
 	local rc
 
 	if [ X`uname -s` != "XLinux" ]; then
-		ocf_log err "IPaddr2 only supported Linux."
+		ocf_log err "IPaddr3 only supported Linux."
 		exit $OCF_ERR_INSTALLED
 	fi
 
@@ -785,6 +783,9 @@ set_clone_count() {
 
     curr_attr_value=$(get_clone_count)
     next_attr_value=`cat $IP_CIP_FILE | awk -F, '{print NF}'`
+    if [ -z "$next_attr_value" ]; then
+      next_attr_value=0
+    fi
     if [ "$curr_attr_value" -ne "$next_attr_value" ]; then
         ${HA_SBIN_DIR}/crm_attribute -N $HOSTNAME -l reboot --name ${INSTANCE_ATTR_NAME}_clone_count -v $next_attr_value
     fi
