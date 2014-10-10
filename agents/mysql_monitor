@@ -66,6 +66,9 @@ OCF_RESKEY_socket_default="/var/lib/mysql/mysql.sock"
 fi
 OCF_RESKEY_reader_attribute_default="readable"
 OCF_RESKEY_writer_attribute_default="writable"
+OCF_RESKEY_pxc_seqno_attribute_default="pxc_seqno"
+OCF_RESKEY_mysql_datadir_default="/var/lib/mysql"
+OCF_RESKEY_mysql_binlogdir_crit_pct_default=98
 OCF_RESKEY_reader_failcount_default="1"
 OCF_RESKEY_user_default="root"
 OCF_RESKEY_password_default=""
@@ -79,6 +82,10 @@ OCF_RESKEY_cluster_type_default="replication"
 : ${OCF_RESKEY_reader_attribute=${OCF_RESKEY_reader_attribute_default}}
 : ${OCF_RESKEY_reader_failcount=${OCF_RESKEY_reader_failcount_default}}
 : ${OCF_RESKEY_writer_attribute=${OCF_RESKEY_writer_attribute_default}}
+: ${OCF_RESKEY_pxc_seqno_attribute=${OCF_RESKEY_pxc_seqno_attribute_default}}
+: ${OCF_RESKEY_mysql_datadir=${OCF_RESKEY_mysql_datadir_default}}
+: ${OCF_RESKEY_mysql_binlogdir=${OCF_RESKEY_mysql_datadir_default}}
+: ${OCF_RESKEY_mysql_binlogdir_crit_pct=${OCF_RESKEY_mysql_binlogdir_crit_pct_default}}
 : ${OCF_RESKEY_user=${OCF_RESKEY_user_default}}
 : ${OCF_RESKEY_password=${OCF_RESKEY_password_default}}
 : ${OCF_RESKEY_max_slave_lag=${OCF_RESKEY_max_slave_lag_default}}
@@ -188,6 +195,41 @@ read-only it will get only the reader_attribute.
 <content type="string" default="${OCF_RESKEY_cluster_type_default}"/>
 </parameter>
 
+<parameter name="pxc_seqno_attribute" unique="0">
+<longdesc lang="en">
+The attribute in the cib that stores the current seqno of the PXC node.  Only useful with cluster_type=pxc.
+</longdesc>
+<shortdesc lang="en">The PXC seqno attribute</shortdesc>
+<content type="string" default="${OCF_RESKEY_pxc_seqno_attribute_default}" />
+</parameter>
+
+<parameter name="mysql_datadir" unique="0">
+<longdesc lang="en">
+The MySQL datadir, used for pxc mode and needed to find the grastate.dat file
+</longdesc>
+<shortdesc lang="en">The MySQL datadir</shortdesc>
+<content type="string" default="${OCF_RESKEY_datadir_default}" />
+</parameter>
+
+<parameter name="mysql_binlogdir" unique="0">
+<longdesc lang="en">
+The directtoy where MySQL puts its binlog files, used for pxc mode, if the usage 
+in percent is above mysql_binlogdir_crit_pct, MySQL is stopped.  This prevents
+a cluster freeze if MySQL cannot write to its binlog with 5.5.
+</longdesc>
+<shortdesc lang="en">The directory where MySQL puts its binlog files</shortdesc>
+<content type="string" default="${OCF_RESKEY_datadir_default}" />
+</parameter>
+
+<parameter name="mysql_binlogdir_crit_pct" unique="0">
+<longdesc lang="en">
+The critical usage level of the partition containing the binlog dir above which
+MySQL is killed.
+</longdesc>
+<shortdesc lang="en">Binlog dir critical usage</shortdesc>
+<content type="integer" default="${OCF_RESKEY_mysql_binlog_dir_crit_pct_default}" />
+</parameter>
+
 </parameters>
 
 <actions>
@@ -260,6 +302,35 @@ get_read_only() {
     else
         return 1
     fi
+}
+
+# get the pxc seqno attribute value
+get_pxc_seqno_attr() {
+    local attr_value
+    local rc
+
+    attr_value=`$CRM_ATTR -l reboot --name ${OCF_RESKEY_pxc_seqno_attribute} --query -q 2> /dev/null`
+    rc=$?
+    if [ "$rc" -eq "0" ]; then
+        echo $attr_value
+    else
+        echo -1
+    fi
+
+}
+
+# Set the pxc seqno attribute value
+update_pxc_seqno_attr() {
+   local curr_attr_value
+   local new_attr_value
+
+   curr_attr_value=$(get_pxc_seqno_attr)
+   new_attr_value=`/bin/cat ${OCF_RESKEY_mysql_datadir}/grastate.dat | /bin/grep seqno | /usr/bin/awk '{ print $2 }'`
+    
+   if [ "$new_attr_value" != "$curr_attr_value" ]; then
+      $CRM_ATTR -l reboot --name ${OCF_RESKEY_pxc_seqno_attribute} -v $new_attr_value
+   fi
+
 }
 
 # get the attribute controlling the readers VIP
@@ -515,6 +586,21 @@ mysql_monitor() {
                 ;;
                 
             'pxc'|'PXC')
+                update_pxc_seqno_attr
+                
+                # Get the free space of the binlogdir
+               FREE_SPC_PCT=`/bin/df $OCF_RESKEY_mysql_binlogdir | /bin/grep -v Filesystem \
+                        | /bin/sed  -e 's/ \+/ /g' | /usr/bin/cut -d' ' -f 5 \
+                        | /usr/bin/tr -d '%'`
+                
+                if [ "$FREE_SPC_PCT" -ge "$OCF_RESKEY_mysql_binlogdir_crit_pct" ]; then
+                    ocf_log warn "Partition $OCF_RESKEY_mysql_binlogdir usage is at " \
+                                 "or more than $OCF_RESKEY_mysql_binlogdir_crit_pct, " \
+                                 "killing MySQL..."
+                    kill $pid
+                fi
+                              
+                
                 pxcstat=`/usr/bin/clustercheck $OCF_RESKEY_user $OCF_RESKEY_password `
                 if [ $? -eq 0 ]; then
                     set_reader_attr 1
@@ -539,7 +625,10 @@ mysql_monitor() {
             esac
         fi
     else
-        ocf_log $1 "MySQL is not running"
+        ocf_log info "MySQL is not running"
+        if [[ $OCF_RESKEY_cluster_type =~ pxc|PXC ]]; then
+            update_pxc_seqno_attr
+        fi
         set_reader_attr 0
         set_writer_attr 0
     fi
