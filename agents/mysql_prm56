@@ -1922,7 +1922,7 @@ if [ "${#OCF_RESKEY_geo_remote_IP}" -gt "0" -a $glb_master_side -ne 0 ]; then
    if [ "$?" -ne "0" ]; then
       glb_master_exists=0
    else
-      glb_master_exists=`echo $glb_remote_info | awk '{ print $NF-1 }'`
+      glb_master_exists=`echo $glb_remote_info | awk '{ print $(NF-1) }'`
       if [[ -z "$glb_master_exists" ]]; then
          glb_master_exists=0
       fi
