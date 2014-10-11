@@ -52,6 +52,8 @@
 #   OCF_RESKEY_reader_failcount
 #   OCF_RESKEY_backup_lockfile
 #   OCF_RESKEY_geo_remote_IP
+#   OCF_RESKEY_geo_remote_user
+#   OCF_RESKEY_geo_remote_opts
 #   OCF_RESKEY_booth_master_ticket
 
 #######################################################################
@@ -134,6 +136,8 @@ MYSQL_BINDIR=`dirname ${OCF_RESKEY_binary}`
 : ${OCF_RESKEY_backup_lockfile=${OCF_RESKEY_backup_lockfile_default}}
 
 : ${OCF_RESKEY_geo_remote_IP}=""
+: ${OCF_RESKEY_geo_remote_user}="root"
+: ${OCF_RESKEY_geo_remote_opts}=""
 : ${OCF_RESKEY_booth_master_ticket}=${OCF_RESKEY_booth_master_ticket_default}
 : ${OCF_RESKEY_post_promote_script}=""
 : ${OCF_RESKEY_async_stop=${OCF_RESKEY_async_stop_default}}
@@ -438,6 +442,24 @@ in a way that connection doesn't take many seconds.  If empty, the booth type
 behavior is not triggered.
 </longdesc>
 <shortdesc lang="en">IP of the remote cluster</shortdesc>
+<content type="string" default="" />
+</parameter>
+
+<parameter name="geo_remote_user" unique="1" required="0">
+<longdesc lang="en">
+When geo_remote_IP is not empty, this will be the custom SSH user that can be 
+used to connect to remote sites.
+</longdesc>
+<shortdesc lang="en">SSH user for remote-enabled sites</shortdesc>
+<content type="string" default="root" />
+</parameter>
+
+<parameter name="geo_remote_opts" unique="1" required="0">
+<longdesc lang="en">
+When geo_remote_IP is not empty, this will be the custom SSH options that can be
+used to connect to remote sites.
+</longdesc>
+<shortdesc lang="en">SSH options for remote-enabled sites</shortdesc>
 <content type="string" default="" />
 </parameter>
 
@@ -1855,18 +1877,6 @@ if [ $rc -ne 0 ]; then
    esac
 fi
 
-# We check if there is a location constraint against this node
-# where $OCF_RESOURCE_INSTANCE should not be running here i.e.
-# -INFINITY score, if so we ignore monitor call for this node
-contrnt=$(cibadmin --query --obj_type constraints\
-   |awk "/rsc=\"$OCF_RESOURCE_INSTANCE\"/,/<\/rsc_location/"\
-   |awk '/score="-INFINITY"/,/<\/rule/'\
-   |egrep "expression attribute=\"#uname\".*operation=\"eq\".*value=\"$HOSTNAME\"" 2> /dev/null)
-
-if [ "$?" -eq "0" ]; then
-   exit $OCF_SUCCESS
-fi
-
 #Global info missing from OCF_RESKEY
 resources=`$CRM_RES --list`
 # now we need the master-slave clone set name, need to walk around limitations
@@ -1882,15 +1892,40 @@ else
       fi
    done
 fi
+
+# We check if there is a location constraint against this node
+# where $OCF_RESOURCE_INSTANCE should not be running here i.e.
+# -INFINITY score, if so we ignore monitor call for this node
+contrnt=$(cibadmin --query --obj_type constraints\
+   |awk "/<rsc_location.*\ rsc=\"($OCF_RESOURCE_INSTANCE|$glb_master_resource)\"/,/<\/rsc_location>/"\
+   |awk '/score="-INFINITY"/,/<\/rule/'\
+   |egrep "expression attribute=\"#uname\".*operation=\"eq\".*value=\"$HOSTNAME\"" 2> /dev/null)
+
+if [ "$?" -eq "0" ]; then
+   exit $OCF_SUCCESS
+fi
+
 is_master_side
 glb_master_side=$?
 if [ "${#OCF_RESKEY_geo_remote_IP}" -gt "0" -a $glb_master_side -ne 0 ]; then
-   # geo_remote_IP is defined, let's query the remote side
+   # If geo_remote_IP is defined and our side is not master, let's query the remote side
    # the variable content will be like: pacemaker-1-1|binlog.000156|107 1
-   glb_remote_info=`$SSH $OCF_RESKEY_geo_remote_IP -l root "$CRM_ATTR_REPL_INFO --query  -q | tr '\n' ' ';$CRM_RES --list | grep -A2 $glb_master_resource | egrep -c 'Master[^\/]'"`
-   glb_master_exists=`echo $glb_remote_info | awk '{ print $NF }'`
-   if [[ -z "$glb_master_exists" ]]; then
+   # or if using GTID: pacemaker-1-1|046d3836-3402-11e4-9b53-0800279b82ba:56743 1
+   # The commands here are boolean tested so if any of them fails we will
+   # not get a MASTER_OK which indicates we got a useful value at least
+   ssh_cmd="$SSH $OCF_RESKEY_geo_remote_IP -l $OCF_RESKEY_geo_remote_user $OCF_RESKEY_geo_remote_opts"
+   ssh_query="$CRM_ATTR_REPL_INFO --query  -q 2> /dev/null"
+   ssh_query="$ssh_query && $CRM_RES --list | grep -A2 $glb_master_resource | egrep -c 'Master[^\/]'"
+   ssh_query="$ssh_query && echo 'MASTER_OK' || echo 'MASTER_NOT_FOUND'"
+   glb_remote_info=`$ssh_cmd "$ssh_query" | tr '\n' ' '`
+   echo "$glb_remote_info" | grep MASTER_OK > /dev/null 2>&1
+   if [ "$?" -ne "0" ]; then
       glb_master_exists=0
+   else
+      glb_master_exists=`echo $glb_remote_info | awk '{ print $NF-1 }'`
+      if [[ -z "$glb_master_exists" ]]; then
+         glb_master_exists=0
+      fi
    fi
 else
    glb_master_exists=`echo "$resources" | grep -A2 $glb_master_resource | egrep -c 'Master[^\/]'`
@@ -1918,3 +1953,4 @@ case "$1" in
    *)     usage
    exit $OCF_ERR_UNIMPLEMENTED;;
 esac
+
