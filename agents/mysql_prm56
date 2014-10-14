@@ -841,15 +841,15 @@ set_master() {
       # Keep replication position
       get_slave_info
       
-      # check if we have auto_position set to 1 as we use 5.6
-      # and currently the only supported gtid method
-      # supported here
-      
+      # check if auto_position is defined (replication is running)
+      # and it is set to 0. This means it was not correctly configured
+      # so we need to stop replication and reconfigure it 
       if [ "$auto_position" == "0" ]; then
          ocf_log warn "Auto position is not enabled, we force it"
-         auto_position=",  MASTER_AUTO_POSITION = 1 "
-      else
-         auto_position=""
+         mysql_run -Q -sw $MYSQL $MYSQL_OPTIONS_REPL \
+         -e "STOP SLAVE;CHANGE MASTER TO \
+            MASTER_AUTO_POSITION=1; \
+            START SLAVE;"
       fi
       
       if [ "$master_log_file" -a "$new_master" = "$master_host" ]; then
@@ -874,8 +874,8 @@ set_master() {
          -e "STOP SLAVE;CHANGE MASTER TO MASTER_HOST='$new_master', \
             MASTER_PORT=$OCF_RESKEY_replication_port, \
             MASTER_USER='$OCF_RESKEY_replication_user', \
-            MASTER_PASSWORD='$OCF_RESKEY_replication_passwd' \
-            $auto_position \
+            MASTER_PASSWORD='$OCF_RESKEY_replication_passwd', \
+            MASTER_AUTO_POSITION=1 \
          $OCF_RESKEY_replication_options ;START SLAVE;"
       fi
    fi
