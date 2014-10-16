@@ -13,6 +13,7 @@
 #           Marian Marinov, Florian Haas: add replication capability
 #           Yves Trudeau, Baron Schwartz: add VIP support and improve replication
 #           Frédéric Descamps:            initial support for 5.6 GTID
+#           Jervin Real, Kenny Gryp:      Better 5.6 GTID Support & Booth Compatibility Improvements
 #
 # Support:  linux-ha@lists.linux-ha.org
 # License:  GNU General Public License (GPL)
