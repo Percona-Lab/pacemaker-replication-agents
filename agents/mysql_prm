@@ -861,7 +861,7 @@ set_master() {
       # Keep replication position
       get_slave_info
       
-      if [ "$master_log_file" -a "$new_master" == "$master_host" ]; then
+      if [ "$master_log_file" -a "$new_master" = "$master_host" ]; then
          #	master_params=", MASTER_LOG_FILE='$master_log_file', \
          #	    MASTER_LOG_POS=$master_log_pos"
          if [ "$1" = "nologging" ]; then
