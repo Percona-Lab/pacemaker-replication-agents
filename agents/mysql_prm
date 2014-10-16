@@ -12,6 +12,7 @@
 #           Narayan Newton:               add Gentoo/Debian defaults
 #           Marian Marinov, Florian Haas: add replication capability
 #           Yves Trudeau, Baron Schwartz: add VIP support and improve replication
+#           Jervin Real, Kenny Gryp:      Booth Compatibility Improvements
 #
 # Support:  linux-ha@lists.linux-ha.org
 # License:  GNU General Public License (GPL)
