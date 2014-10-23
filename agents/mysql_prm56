@@ -1437,46 +1437,31 @@ mysql_start_low() {
    if ocf_is_ms; then
       mysql_extra_params="$mysql_extra_params --skip-slave-start --read-only"
    fi
+   
+   ${OCF_RESKEY_binary} --defaults-file=$OCF_RESKEY_config \
+   --enforce_gtid_consistency=1 \
+   --gtid_mode=on \
+   --pid-file=$OCF_RESKEY_pid \
+   --socket=$OCF_RESKEY_socket \
+   --datadir=$OCF_RESKEY_datadir \
+   --user=$OCF_RESKEY_user $OCF_RESKEY_additional_parameters \
+   $mysql_extra_params >/dev/null 2>&1 &
+   rc=$?
+   
+   # we also get the process id from $! because the PID file is only 
+   # created by mysql as soon as mysql is fully up and running
+   # for example, when recovery is busy, the pid file does not exist yet
+   # this part already creates the PID file as the mysql user
+   # so that other PRM checks know
+   # When recovery happens, the PID file does not exist yet.
+   process_pid=$!
+   su $OCF_RESKEY_user -c "echo '$process_pid' > $OCF_RESKEY_pid"
 
-   # we check if there's no other mysql process already running
-   # and avoid starting it again.
-   pid_prm_ok=0
-   if [ -e ${OCF_RESKEY_pid}.prm ]; then
-      pid_prm=`cat ${OCF_RESKEY_pid}.prm`;
-      pid_prm_name=`ps -p $pid_prm -o comm==`;
-
-      # does PID exist?
-      kill -s 0 $pid_prm
-      if [ $? -eq 0 -a "$pid_prm_name" = "${OCF_RESKEY_binary}" ]; then
-         pid_prm_ok=1;
-      fi
+   if [ $rc != 0 ]; then
+      ocf_log err "MySQL start command failed: $rc"
+      return $rc
    fi
-
-   # if a previous mysql start is still booting up, we won't start it again
-   # and just continue to wait again until it starts
-   if [ $pid_prm_ok -eq 0 ]; then
-      ${OCF_RESKEY_binary} --defaults-file=$OCF_RESKEY_config \
-      --enforce_gtid_consistency=1 \
-      --gtid_mode=on \
-      --pid-file=$OCF_RESKEY_pid \
-      --socket=$OCF_RESKEY_socket \
-      --datadir=$OCF_RESKEY_datadir \
-      --user=$OCF_RESKEY_user $OCF_RESKEY_additional_parameters \
-      $mysql_extra_params >/dev/null 2>&1 &
-      rc=$?
-
-      # we also get the process id from $! because the PID file is only 
-      # created by mysql as soon as mysql is fully up and running
-      # When recovery happens, the PID file does not exist yet.
-      process_pid=$!
-      echo "$process_pid" > ${OCF_RESKEY_pid}.prm
-
-      if [ $rc != 0 ]; then
-         ocf_log err "MySQL start command failed: $rc"
-         return $rc
-      fi
-   fi
-
+   
    # Spin waiting for the server to come up.
    # Let the CRM/LRM time us out if required.
    start_wait=1
