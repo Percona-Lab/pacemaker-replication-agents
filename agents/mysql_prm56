@@ -1547,7 +1547,8 @@ mysql_stop() {
       ocf_log info "MySQL failed to stop after ${shutdown_timeout}s using SIGTERM. Trying SIGKILL..."
       /bin/kill -KILL $pid > /dev/null
    fi
-   
+
+   rm ${OCF_RESKEY_pid}.starting
    ocf_log info "MySQL stopped";
    rm -f /var/lock/subsys/mysqld
    rm -f $OCF_RESKEY_socket
