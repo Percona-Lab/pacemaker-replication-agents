@@ -1379,6 +1379,12 @@ mysql_start() {
    fi
    
    mysql_start_low
+   rc=$?
+
+   if [ $rc != OCF_SUCCESS ]; then
+      ocf_log err "Wasn't able to start MySQL, stopping 'start'."
+      return $rc
+   fi
    
    if ocf_is_ms; then
       # We're configured as a stateful resource. We must start as
@@ -1496,7 +1502,7 @@ mysql_start_low() {
    # so that other PRM checks know
    # When recovery happens, the PID file does not exist yet.
    process_pid=$!
-   # msyql_status expects that if the pid is there and it's running
+   # mysql_status expects that if the pid is there and it's running
    # that mysql is completely active
    #su $OCF_RESKEY_user -c "echo '$process_pid' > $OCF_RESKEY_pid"
    echo "$process_pid" > ${OCF_RESKEY_pid}.starting
@@ -1515,10 +1521,21 @@ mysql_start_low() {
       if [ $rc = $OCF_SUCCESS ]; then
          start_wait=0
          
-         elif [ $rc != $OCF_NOT_RUNNING ]; then
+      elif [ $rc != $OCF_NOT_RUNNING ]; then
          ocf_log info "MySQL start failed: $rc"
          return $rc
       fi
+
+      # if mysql died in the meantime, we shall not wait
+      # until the timeout is reached.
+      kill -s 0 $process_pid > /dev/null
+      mysqld_pid_status=$?
+
+      if [ "$mysqld_pid_status" -ne "0" ]; then
+         ocf_log err "MySQL daemon died during start, giving up."
+         return $OCF_ERR_GENERIC
+      fi
+
       sleep 2
    done
    
