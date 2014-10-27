@@ -1381,7 +1381,7 @@ mysql_start() {
    mysql_start_low
    rc=$?
 
-   if [ $rc != OCF_SUCCESS ]; then
+   if [ $rc != $OCF_SUCCESS ]; then
       ocf_log err "Wasn't able to start MySQL, stopping 'start'."
       return $rc
    fi
