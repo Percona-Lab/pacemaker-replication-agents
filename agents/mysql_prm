@@ -12,6 +12,7 @@
 #           Narayan Newton:               add Gentoo/Debian defaults
 #           Marian Marinov, Florian Haas: add replication capability
 #           Yves Trudeau, Baron Schwartz: add VIP support and improve replication
+#           Jervin Real, Kenny Gryp:      Booth Compatibility Improvements
 #
 # Support:  linux-ha@lists.linux-ha.org
 # License:  GNU General Public License (GPL)
@@ -139,7 +140,7 @@ MYSQL_SBINDIR=`dirname ${OCF_RESKEY_binary}`
 : ${OCF_RESKEY_geo_remote_IP}=""
 : ${OCF_RESKEY_booth_master_ticket}=${OCF_RESKEY_booth_master_ticket_default}
 : ${OCF_RESKEY_post_promote_script}=""
-: ${OCF_RESKEY_prm_binlog_parser_path}="`which prm_binlog_parser` 2> /dev/null"
+: ${OCF_RESKEY_prm_binlog_parser_path}="`which prm_binlog_parser 2> /dev/null`"
 
 : ${OCF_RESKEY_async_stop=${OCF_RESKEY_async_stop_default}}
 : ${OCF_RESKEY_try_restart_crashed_master=${OCF_RESKEY_try_restart_crashed_master_default}}
@@ -1378,6 +1379,12 @@ mysql_start() {
    fi
    
    mysql_start_low
+   rc=$?
+
+   if [ $rc != $OCF_SUCCESS ]; then
+      ocf_log err "Wasn't able to start MySQL, stopping 'start'."
+      return $rc
+   fi
    
    if ocf_is_ms; then
       # We're configured as a stateful resource. We must start as
@@ -1488,6 +1495,18 @@ mysql_start_low() {
    $mysql_extra_params >/dev/null 2>&1 &
    rc=$?
    
+   # we also get the process id from $! because the PID file is only 
+   # created by mysql as soon as mysql is fully up and running
+   # for example, when recovery is busy, the pid file does not exist yet
+   # this part already creates the PID file as the mysql user
+   # so that other PRM checks know
+   # When recovery happens, the PID file does not exist yet.
+   process_pid=$!
+   # mysql_status expects that if the pid is there and it's running
+   # that mysql is completely active
+   #su $OCF_RESKEY_user -c "echo '$process_pid' > $OCF_RESKEY_pid"
+   echo "$process_pid" > ${OCF_RESKEY_pid}.starting
+
    if [ $rc != 0 ]; then
       ocf_log err "MySQL start command failed: $rc"
       return $rc
@@ -1502,10 +1521,21 @@ mysql_start_low() {
       if [ $rc = $OCF_SUCCESS ]; then
          start_wait=0
          
-         elif [ $rc != $OCF_NOT_RUNNING ]; then
+      elif [ $rc != $OCF_NOT_RUNNING ]; then
          ocf_log info "MySQL start failed: $rc"
          return $rc
       fi
+
+      # if mysql died in the meantime, we shall not wait
+      # until the timeout is reached.
+      kill -s 0 $process_pid > /dev/null
+      mysqld_pid_status=$?
+
+      if [ "$mysqld_pid_status" -ne "0" ]; then
+         ocf_log err "MySQL daemon died during start, giving up."
+         return $OCF_ERR_GENERIC
+      fi
+
       sleep 2
    done
    
@@ -1522,12 +1552,14 @@ mysql_stop() {
       set_reader_attr 0
    fi
    
-   if [ ! -f $OCF_RESKEY_pid ]; then
+   # we rely only on ${OCF_RESKEY_pid}.starting
+   # as this certainly contains the file we need with the PID
+   if [ ! -f ${OCF_RESKEY_pid}.starting ]; then
       ocf_log info "MySQL is not running"
       return $OCF_SUCCESS
    fi
    
-   pid=`cat $OCF_RESKEY_pid 2> /dev/null `
+   pid=`cat ${OCF_RESKEY_pid}.starting 2> /dev/null`
    /bin/kill $pid > /dev/null
    rc=$?
    if [ $rc != 0 ]; then
@@ -1558,9 +1590,9 @@ mysql_stop() {
    count=0
    while [ $count -lt $shutdown_timeout ]
    do
-      mysql_status info
+      kill -s 0 $pid
       rc=$?
-      if [ $rc = $OCF_NOT_RUNNING ]; then
+      if [ $rc -ne 0 ]; then
          break
       fi
       count=`expr $count + 1`
@@ -1568,12 +1600,13 @@ mysql_stop() {
       ocf_log debug "MySQL still hasn't stopped yet. Waiting..."
    done
    
-   mysql_status info
-   if [ $? != $OCF_NOT_RUNNING ]; then
+   kill -s 0 $pid
+   if [ $? -eq 0 ]; then
       ocf_log info "MySQL failed to stop after ${shutdown_timeout}s using SIGTERM. Trying SIGKILL..."
       /bin/kill -KILL $pid > /dev/null
    fi
-   
+
+   rm ${OCF_RESKEY_pid}.starting
    ocf_log info "MySQL stopped";
    rm -f /var/lock/subsys/mysqld
    rm -f $OCF_RESKEY_socket

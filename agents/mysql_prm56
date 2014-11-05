@@ -13,6 +13,7 @@
 #           Marian Marinov, Florian Haas: add replication capability
 #           Yves Trudeau, Baron Schwartz: add VIP support and improve replication
 #           Frédéric Descamps:            initial support for 5.6 GTID
+#           Jervin Real, Kenny Gryp:      Better 5.6 GTID Support & Booth Compatibility Improvements
 #
 # Support:  linux-ha@lists.linux-ha.org
 # License:  GNU General Public License (GPL)
@@ -52,6 +53,8 @@
 #   OCF_RESKEY_reader_failcount
 #   OCF_RESKEY_backup_lockfile
 #   OCF_RESKEY_geo_remote_IP
+#   OCF_RESKEY_geo_remote_user
+#   OCF_RESKEY_geo_remote_opts
 #   OCF_RESKEY_booth_master_ticket
 
 #######################################################################
@@ -134,6 +137,8 @@ MYSQL_BINDIR=`dirname ${OCF_RESKEY_binary}`
 : ${OCF_RESKEY_backup_lockfile=${OCF_RESKEY_backup_lockfile_default}}
 
 : ${OCF_RESKEY_geo_remote_IP}=""
+: ${OCF_RESKEY_geo_remote_user}="root"
+: ${OCF_RESKEY_geo_remote_opts}=""
 : ${OCF_RESKEY_booth_master_ticket}=${OCF_RESKEY_booth_master_ticket_default}
 : ${OCF_RESKEY_post_promote_script}=""
 : ${OCF_RESKEY_async_stop=${OCF_RESKEY_async_stop_default}}
@@ -441,6 +446,24 @@ behavior is not triggered.
 <content type="string" default="" />
 </parameter>
 
+<parameter name="geo_remote_user" unique="1" required="0">
+<longdesc lang="en">
+When geo_remote_IP is not empty, this will be the custom SSH user that can be 
+used to connect to remote sites.
+</longdesc>
+<shortdesc lang="en">SSH user for remote-enabled sites</shortdesc>
+<content type="string" default="root" />
+</parameter>
+
+<parameter name="geo_remote_opts" unique="1" required="0">
+<longdesc lang="en">
+When geo_remote_IP is not empty, this will be the custom SSH options that can be
+used to connect to remote sites.
+</longdesc>
+<shortdesc lang="en">SSH options for remote-enabled sites</shortdesc>
+<content type="string" default="" />
+</parameter>
+
 <parameter name="booth_master_ticket" unique="1" required="0">
 <longdesc lang="en">
 In case multiple Geo redundant sites are connected with the booth protocol
@@ -540,9 +563,12 @@ is_slave() {
    
    if [ $rc -eq 0 ]; then
       # show slave status is not empty
-      # Is there a master_log_file defined?  (master_log_file is deleted
+      # Is there a master_uuid defined?  (master_uuid is deleted
       # by reset slave
-      if [ "$master_log_file" ]; then
+      # with GTID, it is possible that $master_log_file is not defined yet, 
+      # as it connects, with MASTER_AUTO_POSITION=1, it needs to find the
+      # binlog file and position, using $master_uuid instead.
+      if [ "$master_uuid" ]; then
          return 0
       else
          return 1
@@ -564,7 +590,10 @@ get_slave_info() {
    
    local mysql_options tmpfile
    
-   if [ "$master_log_file" -a "$master_host" ]; then
+   # with GTID, it is possible that $master_log_file is not defined yet, 
+   # as it connects, with MASTER_AUTO_POSITION=1, it needs to find the
+   # binlog file and position, using $master_uuid instead.
+   if [ "$master_uuid" -a "$master_host" ]; then
       # variables are already defined, get_slave_info has been run before
       return $OCF_SUCCESS
    else
@@ -819,24 +848,28 @@ set_master() {
       # Keep replication position
       get_slave_info
       
-      # check if we have auto_position set to 1 as we use 5.6
-      # and currently the only supported gtid method
-      # supported here
-      
+      # check if auto_position is defined (replication is running)
+      # and it is set to 0. This means it was not correctly configured
+      # so we need to stop replication and reconfigure it 
       if [ "$auto_position" == "0" ]; then
          ocf_log warn "Auto position is not enabled, we force it"
-         auto_position=",  MASTER_AUTO_POSITION = 1 "
-      else
-         auto_position=""
+         mysql_run -Q -sw $MYSQL $MYSQL_OPTIONS_REPL \
+         -e "STOP SLAVE;CHANGE MASTER TO \
+            MASTER_AUTO_POSITION=1; \
+            START SLAVE;"
       fi
       
-      if [ "$master_log_file" -a "$new_master" = "$master_host" ]; then
+      # with GTID, it is possible that $master_log_file is not defined yet, 
+      # as it connects, with MASTER_AUTO_POSITION=1, it needs to find the
+      # binlog file and position, using $master_uuid instead.
+      if [ "$master_uuid" -a "$new_master" = "$master_host" ]; then
          #	master_params=", MASTER_LOG_FILE='$master_log_file', \
          #	    MASTER_LOG_POS=$master_log_pos"
          if [ "$1" = "nologging" ]; then
             :
          else
-            ocf_log info "Kept master pos for $master_host : $master_log_file:$master_log_pos"
+            ocf_log info "Kept master pos for $master_host : $master_log_file:$master_log_pos \
+            master_uuid:$master_uuid executed_gtid_set:$executed_gtid_set"
          fi
          return
       fi
@@ -852,8 +885,8 @@ set_master() {
          -e "STOP SLAVE;CHANGE MASTER TO MASTER_HOST='$new_master', \
             MASTER_PORT=$OCF_RESKEY_replication_port, \
             MASTER_USER='$OCF_RESKEY_replication_user', \
-            MASTER_PASSWORD='$OCF_RESKEY_replication_passwd' \
-            $auto_position \
+            MASTER_PASSWORD='$OCF_RESKEY_replication_passwd', \
+            MASTER_AUTO_POSITION=1 \
          $OCF_RESKEY_replication_options ;START SLAVE;"
       fi
    fi
@@ -1303,6 +1336,12 @@ mysql_start() {
    fi
    
    mysql_start_low
+   rc=$?
+
+   if [ $rc != $OCF_SUCCESS ]; then
+      ocf_log err "Wasn't able to start MySQL, stopping 'start'."
+      return $rc
+   fi
    
    if ocf_is_ms; then
       # We're configured as a stateful resource. We must start as
@@ -1415,6 +1454,18 @@ mysql_start_low() {
    $mysql_extra_params >/dev/null 2>&1 &
    rc=$?
    
+   # we also get the process id from $! because the PID file is only 
+   # created by mysql as soon as mysql is fully up and running
+   # for example, when recovery is busy, the pid file does not exist yet
+   # this part already creates the PID file as the mysql user
+   # so that other PRM checks know
+   # When recovery happens, the PID file does not exist yet.
+   process_pid=$!
+   # mysql_status expects that if the pid is there and it's running
+   # that mysql is completely active
+   #su $OCF_RESKEY_user -c "echo '$process_pid' > $OCF_RESKEY_pid"
+   echo "$process_pid" > ${OCF_RESKEY_pid}.starting
+
    if [ $rc != 0 ]; then
       ocf_log err "MySQL start command failed: $rc"
       return $rc
@@ -1429,10 +1480,21 @@ mysql_start_low() {
       if [ $rc = $OCF_SUCCESS ]; then
          start_wait=0
          
-         elif [ $rc != $OCF_NOT_RUNNING ]; then
+      elif [ $rc != $OCF_NOT_RUNNING ]; then
          ocf_log info "MySQL start failed: $rc"
          return $rc
       fi
+
+      # if mysql died in the meantime, we shall not wait
+      # until the timeout is reached.
+      kill -s 0 $process_pid > /dev/null
+      mysqld_pid_status=$?
+
+      if [ "$mysqld_pid_status" -ne "0" ]; then
+         ocf_log err "MySQL daemon died during start, giving up."
+         return $OCF_ERR_GENERIC
+      fi
+
       sleep 2
    done
    
@@ -1449,12 +1511,14 @@ mysql_stop() {
       set_reader_attr 0
    fi
    
-   if [ ! -f $OCF_RESKEY_pid ]; then
+   # we rely only on ${OCF_RESKEY_pid}.starting
+   # as this certainly contains the file we need with the PID
+   if [ ! -f ${OCF_RESKEY_pid}.starting ]; then
       ocf_log info "MySQL is not running"
       return $OCF_SUCCESS
    fi
    
-   pid=`cat $OCF_RESKEY_pid 2> /dev/null `
+   pid=`cat ${OCF_RESKEY_pid}.starting 2> /dev/null`
    /bin/kill $pid > /dev/null
    rc=$?
    if [ $rc != 0 ]; then
@@ -1485,9 +1549,9 @@ mysql_stop() {
    count=0
    while [ $count -lt $shutdown_timeout ]
    do
-      mysql_status info
+      kill -s 0 $pid
       rc=$?
-      if [ $rc = $OCF_NOT_RUNNING ]; then
+      if [ $rc -ne 0 ]; then
          break
       fi
       count=`expr $count + 1`
@@ -1495,12 +1559,13 @@ mysql_stop() {
       ocf_log debug "MySQL still hasn't stopped yet. Waiting..."
    done
    
-   mysql_status info
-   if [ $? != $OCF_NOT_RUNNING ]; then
+   kill -s 0 $pid
+   if [ $? -eq 0 ]; then
       ocf_log info "MySQL failed to stop after ${shutdown_timeout}s using SIGTERM. Trying SIGKILL..."
       /bin/kill -KILL $pid > /dev/null
    fi
-   
+
+   rm ${OCF_RESKEY_pid}.starting
    ocf_log info "MySQL stopped";
    rm -f /var/lock/subsys/mysqld
    rm -f $OCF_RESKEY_socket
@@ -1855,18 +1920,6 @@ if [ $rc -ne 0 ]; then
    esac
 fi
 
-# We check if there is a location constraint against this node
-# where $OCF_RESOURCE_INSTANCE should not be running here i.e.
-# -INFINITY score, if so we ignore monitor call for this node
-contrnt=$(cibadmin --query --obj_type constraints\
-   |awk "/rsc=\"$OCF_RESOURCE_INSTANCE\"/,/<\/rsc_location/"\
-   |awk '/score="-INFINITY"/,/<\/rule/'\
-   |egrep "expression attribute=\"#uname\".*operation=\"eq\".*value=\"$HOSTNAME\"" 2> /dev/null)
-
-if [ "$?" -eq "0" ]; then
-   exit $OCF_SUCCESS
-fi
-
 #Global info missing from OCF_RESKEY
 resources=`$CRM_RES --list`
 # now we need the master-slave clone set name, need to walk around limitations
@@ -1882,15 +1935,40 @@ else
       fi
    done
 fi
+
+# We check if there is a location constraint against this node
+# where $OCF_RESOURCE_INSTANCE should not be running here i.e.
+# -INFINITY score, if so we ignore monitor call for this node
+contrnt=$(cibadmin --query --obj_type constraints\
+   |awk "/<rsc_location.*\ rsc=\"($OCF_RESOURCE_INSTANCE|$glb_master_resource)\"/,/<\/rsc_location>/"\
+   |awk '/score="-INFINITY"/,/<\/rule/'\
+   |egrep "expression attribute=\"#uname\".*operation=\"eq\".*value=\"$HOSTNAME\"" 2> /dev/null)
+
+if [ "$?" -eq "0" ]; then
+   exit $OCF_SUCCESS
+fi
+
 is_master_side
 glb_master_side=$?
 if [ "${#OCF_RESKEY_geo_remote_IP}" -gt "0" -a $glb_master_side -ne 0 ]; then
-   # geo_remote_IP is defined, let's query the remote side
+   # If geo_remote_IP is defined and our side is not master, let's query the remote side
    # the variable content will be like: pacemaker-1-1|binlog.000156|107 1
-   glb_remote_info=`$SSH $OCF_RESKEY_geo_remote_IP -l root "$CRM_ATTR_REPL_INFO --query  -q | tr '\n' ' ';$CRM_RES --list | grep -A2 $glb_master_resource | egrep -c 'Master[^\/]'"`
-   glb_master_exists=`echo $glb_remote_info | awk '{ print $NF }'`
-   if [[ -z "$glb_master_exists" ]]; then
+   # or if using GTID: pacemaker-1-1|046d3836-3402-11e4-9b53-0800279b82ba:56743 1
+   # The commands here are boolean tested so if any of them fails we will
+   # not get a MASTER_OK which indicates we got a useful value at least
+   ssh_cmd="$SSH $OCF_RESKEY_geo_remote_IP -l $OCF_RESKEY_geo_remote_user $OCF_RESKEY_geo_remote_opts"
+   ssh_query="$CRM_ATTR_REPL_INFO --query  -q 2> /dev/null"
+   ssh_query="$ssh_query && $CRM_RES --list | grep -A2 $glb_master_resource | egrep -c 'Master[^\/]'"
+   ssh_query="$ssh_query && echo 'MASTER_OK' || echo 'MASTER_NOT_FOUND'"
+   glb_remote_info=`$ssh_cmd "$ssh_query" | tr '\n' ' '`
+   echo "$glb_remote_info" | grep MASTER_OK > /dev/null 2>&1
+   if [ "$?" -ne "0" ]; then
       glb_master_exists=0
+   else
+      glb_master_exists=`echo $glb_remote_info | awk '{ print $(NF-1) }'`
+      if [[ -z "$glb_master_exists" ]]; then
+         glb_master_exists=0
+      fi
    fi
 else
    glb_master_exists=`echo "$resources" | grep -A2 $glb_master_resource | egrep -c 'Master[^\/]'`
@@ -1918,3 +1996,4 @@ case "$1" in
    *)     usage
    exit $OCF_ERR_UNIMPLEMENTED;;
 esac
+
