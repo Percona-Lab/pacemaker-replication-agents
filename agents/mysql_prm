@@ -2065,7 +2065,7 @@ fi
 # We check if there is a location constraint against this node
 # where $OCF_RESOURCE_INSTANCE should not be running here i.e.
 # -INFINITY score, if so we ignore monitor call for this node
-contrnt=$(cibadmin --query --obj_type constraints\
+contrnt=$(cibadmin -t 2 --query --obj_type constraints\
    |awk "/rsc=\"$OCF_RESOURCE_INSTANCE\"/,/<\/rsc_location/"\
    |awk '/score="-INFINITY"/,/<\/rule/'\
    |egrep "expression attribute=\"#uname\".*operation=\"eq\".*value=\"$HOSTNAME\"" 2> /dev/null)
