@@ -1956,7 +1956,7 @@ if [ "${#OCF_RESKEY_geo_remote_IP}" -gt "0" -a $glb_master_side -ne 0 ]; then
    # or if using GTID: pacemaker-1-1|046d3836-3402-11e4-9b53-0800279b82ba:56743 1
    # The commands here are boolean tested so if any of them fails we will
    # not get a MASTER_OK which indicates we got a useful value at least
-   ssh_cmd="$SSH $OCF_RESKEY_geo_remote_IP -l $OCF_RESKEY_geo_remote_user $OCF_RESKEY_geo_remote_opts"
+   ssh_cmd="$SSH $OCF_RESKEY_geo_remote_IP -l $OCF_RESKEY_geo_remote_user -o ConnectTimeout=3 -o PasswordAuthentication=no -q $OCF_RESKEY_geo_remote_opts"
    ssh_query="$CRM_ATTR_REPL_INFO --query  -q 2> /dev/null"
    ssh_query="$ssh_query && $CRM_RES --list | grep -A2 $glb_master_resource | egrep -c 'Master[^\/]'"
    ssh_query="$ssh_query && echo 'MASTER_OK' || echo 'MASTER_NOT_FOUND'"
