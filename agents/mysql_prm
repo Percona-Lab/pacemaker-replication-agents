@@ -23,7 +23,7 @@
 # An example usage in /etc/ha.d/haresources:
 #       node1  10.0.0.170 mysql
 #
-# Version: 20141112120822
+# Version: 20141112131457
 #
 # See usage() function below for more details...
 #
@@ -1501,7 +1501,7 @@ mysql_start_low() {
    # user
    for dir in $pid_dir $socket_dir; do
       # needed to wrap around su a bit, sssd causing issue
-      if [ `su - mysql -s /bin/bash -c "if test -w /store/database; then echo yes; else echo no; fi" 2> /dev/null` == "yes" ]; then
+      if [ `su - $OCF_RESKEY_user -s /bin/bash -c "if test -w $dir; then echo yes; else echo no; fi" 2> /dev/null` != "yes" ]; then
          ocf_log err "Directory $dir is not writable by $OCF_RESKEY_user"
          exit $OCF_ERR_PERM;
       fi
