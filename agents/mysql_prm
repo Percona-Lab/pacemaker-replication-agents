@@ -23,7 +23,7 @@
 # An example usage in /etc/ha.d/haresources:
 #       node1  10.0.0.170 mysql
 #
-# Version: 20140901101510
+# Version: 20141112120822
 #
 # See usage() function below for more details...
 #
@@ -780,7 +780,7 @@ check_slave() {
             set_reader_attr 0
             exit $OCF_ERR_INSTALLED
          fi
-         elif ocf_is_ms; then
+      elif ocf_is_ms; then
          # Even if we're not set to evict lagging slaves, we can
          # still use the seconds behind master value to set our
          # master preference.
@@ -790,7 +790,14 @@ check_slave() {
             # Sanitize a below-zero preference to just zero
             master_pref=0
          fi
-         $CRM_MASTER -v $master_pref
+
+         # Is the datadir almost full
+         if check_datadir_state; then
+            $CRM_MASTER -v $master_pref
+         else
+            # full so not good for a master
+            $CRM_MASTER -v -2147483640
+         fi
       fi
       
       # is the slave ok to have a VIP on it
@@ -1120,6 +1127,23 @@ get_local_ip() {
    fi
 }
 
+# Determine if the datadir is full or almost full, the threshold is 97%
+check_datadir_state() {
+   # Get the free space of the binlogdir
+   FREE_SPC_PCT=`/bin/df $OCF_RESKEY_datadir | /bin/grep -v Filesystem \
+                        | /bin/sed  -e 's/ \+/ /g' | /usr/bin/cut -d' ' -f 5 \
+                        | /usr/bin/tr -d '%'`
+
+   if [ "$FREE_SPC_PCT" -ge "97" ]; then
+      ocf_log warn "Partition $OCF_RESKEY_datadir usage is at " \
+               "or more than 97, " \
+               "unsuitable for master..."
+      return 1
+   fi
+   
+   return 0
+}
+
 #######################################################################
 
 # Functions invoked by resource manager actions
@@ -1298,7 +1322,8 @@ mysql_monitor() {
             new_master_status_attr="$(get_master_status File)|$(get_master_status Position)|$(get_max_binlog_size)"
             rm -f $master_status_file
             if [ "$master_status_attr" != "$new_master_status_attr" ]; then
-               $CRM_ATTR_REPL_STATUS -v "$new_master_status_attr"
+               # Doing in bg, no need to wait and that can hang if a node is lost at the same time
+               $CRM_ATTR_REPL_STATUS -v "$new_master_status_attr" &
             fi
             
             # Is this following a recent master crash?
@@ -1343,7 +1368,10 @@ mysql_monitor() {
       ocf_log debug "MySQL monitor succeeded (master)";
       if [ "$OCF_RESKEY_CRM_meta_interval" -eq "0" ]; then
          # this is a probe and this server is a master so need to set master_score
-         $CRM_MASTER -v $((${OCF_RESKEY_max_slave_lag}+1000))
+         $CRM_MASTER -v 2147483647
+      fi
+      if ! check_datadir_state; then
+         $CRM_MASTER -v -2147483640
       fi
       return $OCF_RUNNING_MASTER
    else
@@ -1375,6 +1403,8 @@ mysql_start() {
    # Is MySQL still stopping, OCF_STOPPING is a custom error code
    if [ "$current_status" = "$OCF_STOPPING" ]; then
       ocf_log err "MySQL asked to start while still stopping"
+      # TODO, wait for stop (or timeout). For now just a sleep
+      sleep 5
       return $OCF_ERR_GENERIC
    fi
    
@@ -1465,12 +1495,13 @@ mysql_start_low() {
       mkdir -p $socket_dir
       chown $OCF_RESKEY_user:$OCF_RESKEY_group $socket_dir
    fi
-   
+      
    # Regardless of whether we just created the directory or it
    # already existed, check whether it is writable by the configured
    # user
    for dir in $pid_dir $socket_dir; do
-      if ! su -s /bin/sh - $OCF_RESKEY_user -c "test -w $dir"; then
+      # needed to wrap around su a bit, sssd causing issue
+      if [ `su - mysql -s /bin/bash -c "if test -w /store/database; then echo yes; else echo no; fi" 2> /dev/null` == "yes" ]; then
          ocf_log err "Directory $dir is not writable by $OCF_RESKEY_user"
          exit $OCF_ERR_PERM;
       fi
