@@ -1301,6 +1301,9 @@ mysql_monitor() {
          # this is a probe and this server is a master so need to set master_score
          $CRM_MASTER -v $((${OCF_RESKEY_max_slave_lag}+1000))
       fi
+
+      set_reader_attr 1
+
       return $OCF_RUNNING_MASTER
    else
       ocf_log debug "MySQL monitor succeeded";
