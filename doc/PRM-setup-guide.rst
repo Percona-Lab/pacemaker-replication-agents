@@ -310,7 +310,7 @@ In this case, ``vi`` many not work for attribute editing so you can use a comman
 The MySQL resource primitive
 ----------------------------
 
-We are now ready to start giving work to Pacemaker the first thing we will do is configure the mysql primitive which defines how Pacemaker will call the mysql resource agent.  The resource has many parameter, let's first review them, the defautls presented are the ones for Linux.
+We are now ready to start giving work to Pacemaker the first thing we will do is configure the mysql primitive which defines how Pacemaker will call the mysql resource agent.  The resource has many parameter, let's first review them, the defaults presented are the ones for Linux.
 
 =======================  ========================================================================================================
 Parameter                Description
@@ -378,7 +378,7 @@ booth_master_ticket      Booth ticket name of the Geo DR master role, see the PR
 post_promote_script      A script that is called at the end of the promote operation.  It can be used for some special
                          use case like preventing failback.  See "Preventing failback" in the How to section.
                          
-prm_binlog_parser_path   Path of the tool used by PRM to parse the binlog and relaylog. It is derived fron ybinlog developed by 
+prm_binlog_parser_path   Path of the tool used by PRM to parse the binlog and relaylog. It is derived from ybinlog developed by
                          Yelp. It can be found at:
                          https://github.com/percona/percona-pacemaker-agents/tree/master/tools/ybinlogp
                          
@@ -399,7 +399,20 @@ So here's a typical primitive declaration::
          op start interval="0" timeout="60s" \
          op stop interval="0" timeout="60s" 
 
-An easy way to load the above fragment is to use the ``crm configure edit`` command.  You will notice that we also define two monitor operations, one for the role Master and one for role slave with different intervals.  It is important to have different intervals, for Pacemaker internal reasons. Also, I defined the timeout for start and stop to 60s, make sure you have configured innodb_log_file_size in a way that mysql can stop in less than 60s with the maximum allowed number of dirty pages and that it can start in less than 60s while having to perform Innodb recovery.  Since the snippet refers to role Master and Slave, you need to also include the master slave clone set (below).
+An easy way to load the above fragment is to use the ``crm configure edit`` command.  You will notice that we also define two monitor operations, one for the role Master and one for role slave with different intervals.  It is important to have different intervals, for Pacemaker internal reasons. Also, I defined the timeout for start and stop to 60s, make sure you have configured innodb_log_file_size in a way that mysql can stop in less than 60s with the maximum allowed number of dirty pages and that it can start in less than 60s while having to perform Innodb recovery.
+
+An alterate way to configure this using pcs is::
+
+    pcs resource create p_mysql ocf:percona:mysql \
+                config="/etc/my.cnf" pid="/var/lib/mysql/mysqld.pid" socket="/var/run/mysqld/mysqld.sock" replication_user="repl_user" \
+                replication_passwd="ola5P1ZMU" max_slave_lag="60" evict_outdated_slaves="false" binary="/usr/libexec/mysqld" \
+                test_user="test_user" test_passwd="2JcXCxKF"
+    pcs resource add_operation p_mysql monitor interval="5s" role="Master" OCF_CHECK_LEVEL="1"
+    pcs resource add_operation p_mysql monitor interval="2s" role="Slave" OCF_CHECK_LEVEL="1"
+    pcs resource add_operation p_mysql start interval="0" timeout="60s"
+    pcs resource add_operation p_mysql stop interval="0" timeout="60s" 
+
+Since the snippet refers to role Master and Slave, you need to also include the master slave clone set (below).
 
 The Master slave clone set
 --------------------------
@@ -410,6 +423,11 @@ Next we need to tell Pacemaker to start a set of similar resource (the p_mysql t
         meta master-max="1" master-node-max="1" clone-max="2" clone-node-max="1" notify="true" globally-unique="false" target-role="Master" is-managed="true"
 
 Here, the importants elements are clone-max and notify.  ``clone-max`` is the number of databases node involded in the ``ms`` set.  Since we are consider a two nodes cluster, it is set to 2.  If we ever add a node, we will need to increase ``clone-max`` to 3.  The solution works with notification, so it is mandatory to enable notifications with ``notify`` set to true.
+
+An alterate way to configure this using pcs is::
+
+   pcs resource update p_mysql   --master master-max="1" master-node-max="1" clone-max="2" clone-node-max="1" notify="true" globally-unique="false" target-role="Master" is-managed="true"
+
 
 The VIP primitives
 ------------------
@@ -428,6 +446,19 @@ Let's assume we want to have a writer virtual IP (VIP), 172.30.222.100 and two r
 
 After adding these primitives to the cluster configuration with ``crm configure edit``, the VIPs will be distributed in a round-robin fashion, not exactly ideal.  This is why we need to add rules to control on which hosts they'll be on.
 
+
+An alterate way to configure this using pcs is::
+
+   pcs resource create reader_vip_1 ocf:heartbeat:IPaddr2 \
+         ip="172.30.222.101" nic="eth1" \
+         op monitor interval="10s"
+   pcs resource create reader_vip_2 ocf:heartbeat:IPaddr2 \
+         ip="172.30.222.102" nic="eth1" \
+         op monitor interval="10s"
+   pcs resource create writer_vip ocf:heartbeat:IPaddr2 \
+         ip="172.30.222.100" nic="eth1" \
+         op monitor interval="10s"
+
 Reader VIP location rules
 -------------------------
 
@@ -440,6 +471,11 @@ One of the new element introduced with this solution is the addition of a transi
 
 Again, use ``crm configure edit`` to add the these rules.
 
+An alterate way to configure this using pcs is::
+
+   pcs constraint location  reader_vip_1  avoids  readable eq 0
+   pcs constraint location  reader_vip_2  avoids  readable eq 0
+
 Writer VIP rules
 ----------------
 
@@ -447,6 +483,11 @@ The writer VIP is simpler, it is bound to the master.  This is achieved with a c
 
    colocation writer_vip_on_master inf: writer_vip ms_MySQL:Master 
    order ms_MySQL_promote_before_vip inf: ms_MySQL:promote writer_vip:start
+
+An alterate way to configure this using pcs is::
+
+   pcs constraint colocation add  writer_vip p_mysql role=Master
+   pcs constraint order promote p_mysql then start writer_vip
 
 All together
 ------------
@@ -492,7 +533,8 @@ Here's all the snippets grouped together::
          p_mysql_REPL_INFO="172.30.222.193|mysqld-bin.000002|106"
 
 
-You'll notice toward the end, the ``p_mysql_REPL_INFO`` attribute (the value may differ) that correspond to the master status when it has been promoted to master.  
+You'll notice toward the end, the ``p_mysql_REPL_INFO`` attribute (the value may differ) that correspond to the master status when it has been promoted to master.
+If using pcs ``pcs config`` will show a similar output.
  
 --------
 Behavior
@@ -527,7 +569,7 @@ Useful Pacemaker commands
 To check the cluster status
 ===========================
 
-Two tools can be used to query the cluster status, ``crm_mon`` and ``crm status``.  They produce the same output but ``crm_mon`` is more like top, it stays on screen and refreshes at every changes.  ``crm status`` is a one time status dump.  The output is the following::
+Two tools can be used to query the cluster status, ``crm_mon`` and ``crm status`` (equivalent ``pcs status``).  They produce the same output but ``crm_mon`` is more like top, it stays on screen and refreshes at every changes.  ``crm status`` is a one time status dump.  The output is the following::
 
    [root@host-01 ~]# crm status
    ============
@@ -552,7 +594,7 @@ Two tools can be used to query the cluster status, ``crm_mon`` and ``crm status`
 To view and/or edit the configuration
 =====================================
 
-To view the current configuration use ``crm configure show`` and to edit, use ``crm configure edit``.  The later command starts the vi editor on the current configuration.  If you want to use another editor, set the EDITOR session variable. 
+To view the current configuration use ``crm configure show`` (equilvalent ``pcs config``) and to edit, use ``crm configure edit``.  The later command starts the vi editor on the current configuration.  If you want to use another editor, set the EDITOR session variable.  Editing resources with pcs can be done with ``pcs resource modify`` however for constraits look at the ``pcs constraint help`` for options.
 
 To change a node status
 =======================
