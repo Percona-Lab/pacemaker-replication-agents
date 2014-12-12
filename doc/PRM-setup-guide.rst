@@ -407,10 +407,8 @@ An alterate way to configure this using pcs is::
                 config="/etc/my.cnf" pid="/var/lib/mysql/mysqld.pid" socket="/var/run/mysqld/mysqld.sock" replication_user="repl_user" \
                 replication_passwd="ola5P1ZMU" max_slave_lag="60" evict_outdated_slaves="false" binary="/usr/libexec/mysqld" \
                 test_user="test_user" test_passwd="2JcXCxKF"
-    pcs resource add_operation p_mysql monitor interval="5s" role="Master" OCF_CHECK_LEVEL="1"
-    pcs resource add_operation p_mysql monitor interval="2s" role="Slave" OCF_CHECK_LEVEL="1"
-    pcs resource add_operation p_mysql start interval="0" timeout="60s"
-    pcs resource add_operation p_mysql stop interval="0" timeout="60s" 
+    pcs resource op add p_mysql start interval="0" timeout="60s"
+    pcs resource op add p_mysql stop interval="0" timeout="60s" 
 
 Since the snippet refers to role Master and Slave, you need to also include the master slave clone set (below).
 
@@ -427,6 +425,11 @@ Here, the importants elements are clone-max and notify.  ``clone-max`` is the nu
 An alterate way to configure this using pcs is::
 
    pcs resource update p_mysql   --master master-max="1" master-node-max="1" clone-max="2" clone-node-max="1" notify="true" globally-unique="false" target-role="Master" is-managed="true"
+   pcs resource master ms_MySQL p_mysql
+   pcs constraint colocation add  master  ms_MySQL with writer_vip
+   pcs resource op add  p_mysql monitor interval="5s" role="Master" OCF_CHECK_LEVEL="1"
+   pcs resource op add  p_mysql monitor interval="2s" role="Slave" OCF_CHECK_LEVEL="1"
+
 
 
 The VIP primitives
