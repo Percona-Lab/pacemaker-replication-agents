@@ -1368,7 +1368,9 @@ mysql_monitor() {
       if [ "$OCF_RESKEY_CRM_meta_interval" -eq "0" ]; then
          # this is a probe and this server is a master so need to set master_score
          $CRM_MASTER -v 2147483647
+         set_reader_attr 1
       fi
+      
       if ! check_datadir_state; then
          $CRM_MASTER -v -2147483640
       fi

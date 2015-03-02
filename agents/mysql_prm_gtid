@@ -1095,6 +1095,23 @@ get_local_ip() {
    fi
 }
 
+# Determine if the datadir is full or almost full, the threshold is 97%
+check_datadir_state() {
+   # Get the free space of the binlogdir
+   FREE_SPC_PCT=`/bin/df $OCF_RESKEY_datadir | /bin/grep -v Filesystem \
+                        | /bin/sed  -e 's/ \+/ /g' | /usr/bin/cut -d' ' -f 5 \
+                        | /usr/bin/tr -d '%'`
+
+   if [ "$FREE_SPC_PCT" -ge "97" ]; then
+      ocf_log warn "Partition $OCF_RESKEY_datadir usage is at " \
+               "or more than 97, " \
+               "unsuitable for master..."
+      return 1
+   fi
+   
+   return 0
+}
+
 #######################################################################
 
 # Functions invoked by resource manager actions
@@ -1299,7 +1316,12 @@ mysql_monitor() {
       ocf_log debug "MySQL monitor succeeded (master)";
       if [ "$OCF_RESKEY_CRM_meta_interval" -eq "0" ]; then
          # this is a probe and this server is a master so need to set master_score
-         $CRM_MASTER -v $((${OCF_RESKEY_max_slave_lag}+1000))
+         $CRM_MASTER -v 2147483647
+         set_reader_attr 1
+      fi
+      
+      if ! check_datadir_state; then
+         $CRM_MASTER -v -2147483640
       fi
       return $OCF_RUNNING_MASTER
    else
