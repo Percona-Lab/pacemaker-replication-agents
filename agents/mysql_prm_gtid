@@ -1,0 +1,1999 @@
+#!/bin/bash
+#
+#
+# MySQL
+#
+# Description:  Manages a MySQL database as Linux-HA resource
+#
+# Authors:  Alan Robertson:               DB2 Script
+#           Jakub Janczak:                rewrite as MySQL
+#           Andrew Beekhof:               cleanup and import
+#           Sebastian Reitenbach:         add OpenBSD defaults, more cleanup
+#           Narayan Newton:               add Gentoo/Debian defaults
+#           Marian Marinov, Florian Haas: add replication capability
+#           Yves Trudeau, Baron Schwartz: add VIP support and improve replication
+#           Frédéric Descamps:            initial support for 5.6 GTID
+#           Jervin Real, Kenny Gryp:      Better 5.6 GTID Support & Booth Compatibility Improvements
+#
+# Support:  linux-ha@lists.linux-ha.org
+# License:  GNU General Public License (GPL)
+#
+# (c) 2002-2005 International Business Machines, Inc.
+#     2005-2010 Linux-HA contributors
+#
+# An example usage in /etc/ha.d/haresources:
+#       node1  10.0.0.170 mysql
+#
+# Version: 20140801093606
+#
+# See usage() function below for more details...
+#
+# OCF instance parameters:
+#   OCF_RESKEY_binary
+#   OCF_RESKEY_client_binary
+#   OCF_RESKEY_config
+#   OCF_RESKEY_datadir
+#   OCF_RESKEY_user
+#   OCF_RESKEY_group
+#   OCF_RESKEY_test_table
+#   OCF_RESKEY_test_user
+#   OCF_RESKEY_test_passwd
+#   OCF_RESKEY_enable_creation
+#   OCF_RESKEY_additional_parameters
+#   OCF_RESKEY_log
+#   OCF_RESKEY_pid
+#   OCF_RESKEY_socket
+#   OCF_RESKEY_replication_user
+#   OCF_RESKEY_replication_passwd
+#   OCF_RESKEY_replication_port
+#   OCF_RESKEY_replication_options
+#   OCF_RESKEY_max_slave_lag
+#   OCF_RESKEY_evict_outdated_slaves
+#   OCF_RESKEY_reader_attribute
+#   OCF_RESKEY_reader_failcount
+#   OCF_RESKEY_backup_lockfile
+#   OCF_RESKEY_geo_remote_IP
+#   OCF_RESKEY_geo_remote_user
+#   OCF_RESKEY_geo_remote_opts
+#   OCF_RESKEY_booth_master_ticket
+
+#######################################################################
+# Initialization:
+
+: ${OCF_FUNCTIONS_DIR=${OCF_ROOT}/lib/heartbeat}
+. ${OCF_FUNCTIONS_DIR}/ocf-shellfuncs
+
+#######################################################################
+
+# Fill in some defaults if no values are specified
+HOSTOS=`uname`
+if [ "X${HOSTOS}" = "XOpenBSD" ];then
+   OCF_RESKEY_binary_default="/usr/local/bin/mysqld_safe"
+   OCF_RESKEY_config_default="/etc/my.cnf"
+   OCF_RESKEY_datadir_default="/var/mysql"
+   OCF_RESKEY_user_default="_mysql"
+   OCF_RESKEY_group_default="_mysql"
+   OCF_RESKEY_log_default="/var/log/mysqld.log"
+   OCF_RESKEY_pid_default="/var/mysql/mysqld.pid"
+   OCF_RESKEY_socket_default="/var/run/mysql/mysql.sock"
+else
+   OCF_RESKEY_binary_default="/usr/bin/safe_mysqld"
+   OCF_RESKEY_config_default="/etc/my.cnf"
+   OCF_RESKEY_datadir_default="/var/lib/mysql"
+   OCF_RESKEY_user_default="mysql"
+   OCF_RESKEY_group_default="mysql"
+   OCF_RESKEY_log_default="/var/log/mysqld.log"
+   OCF_RESKEY_pid_default="/var/run/mysql/mysqld.pid"
+   OCF_RESKEY_socket_default="/var/lib/mysql/mysql.sock"
+fi
+OCF_RESKEY_client_binary_default="mysql"
+OCF_RESKEY_test_user_default="root"
+OCF_RESKEY_test_table_default="mysql.user"
+OCF_RESKEY_test_passwd_default=""
+OCF_RESKEY_enable_creation_default=0
+OCF_RESKEY_additional_parameters_default=""
+OCF_RESKEY_replication_port_default="3306"
+OCF_RESKEY_max_slave_lag_default="3600"
+OCF_RESKEY_evict_outdated_slaves_default="false"
+OCF_RESKEY_reader_attribute_default="readable"
+OCF_RESKEY_reader_failcount_default="1"
+OCF_RESKEY_backup_lockfile_default="/var/lock/innobackupex"
+OCF_RESKEY_booth_master_ticket_default="ticketMaster"
+OCF_RESKEY_async_stop_default=0
+
+: ${OCF_RESKEY_binary=${OCF_RESKEY_binary_default}}
+MYSQL_BINDIR=`dirname ${OCF_RESKEY_binary}`
+
+: ${OCF_RESKEY_client_binary=${OCF_RESKEY_client_binary_default}}
+
+: ${OCF_RESKEY_config=${OCF_RESKEY_config_default}}
+: ${OCF_RESKEY_datadir=${OCF_RESKEY_datadir_default}}
+
+: ${OCF_RESKEY_user=${OCF_RESKEY_user_default}}
+: ${OCF_RESKEY_group=${OCF_RESKEY_group_default}}
+
+: ${OCF_RESKEY_log=${OCF_RESKEY_log_default}}
+: ${OCF_RESKEY_pid=${OCF_RESKEY_pid_default}}
+: ${OCF_RESKEY_socket=${OCF_RESKEY_socket_default}}
+
+: ${OCF_RESKEY_test_user=${OCF_RESKEY_test_user_default}}
+: ${OCF_RESKEY_test_table=${OCF_RESKEY_test_table_default}}
+: ${OCF_RESKEY_test_passwd=${OCF_RESKEY_test_passwd_default}}
+
+: ${OCF_RESKEY_enable_creation=${OCF_RESKEY_enable_creation_default}}
+: ${OCF_RESKEY_additional_parameters=${OCF_RESKEY_additional_parameters_default}}
+
+: ${OCF_RESKEY_replication_user=${OCF_RESKEY_replication_user_default}}
+: ${OCF_RESKEY_replication_passwd=${OCF_RESKEY_replication_passwd_default}}
+: ${OCF_RESKEY_replication_port=${OCF_RESKEY_replication_port_default}}
+: ${OCF_RESKEY_replication_options=${OCF_RESKEY_replication_options_default}}
+
+: ${OCF_RESKEY_max_slave_lag=${OCF_RESKEY_max_slave_lag_default}}
+: ${OCF_RESKEY_evict_outdated_slaves=${OCF_RESKEY_evict_outdated_slaves_default}}
+
+: ${OCF_RESKEY_reader_attribute=${OCF_RESKEY_reader_attribute_default}}
+: ${OCF_RESKEY_reader_failcount=${OCF_RESKEY_reader_failcount_default}}
+
+: ${OCF_RESKEY_backup_lockfile=${OCF_RESKEY_backup_lockfile_default}}
+
+: ${OCF_RESKEY_geo_remote_IP}=""
+: ${OCF_RESKEY_geo_remote_user}="root"
+: ${OCF_RESKEY_geo_remote_opts}=""
+: ${OCF_RESKEY_booth_master_ticket}=${OCF_RESKEY_booth_master_ticket_default}
+: ${OCF_RESKEY_post_promote_script}=""
+: ${OCF_RESKEY_async_stop=${OCF_RESKEY_async_stop_default}}
+
+#######################################################################
+# Convenience variables
+
+MYSQL=$OCF_RESKEY_client_binary
+
+MYSQL_OPTIONS_LOCAL="-A -S $OCF_RESKEY_socket --connect_timeout=10"
+MYSQL_OPTIONS_REPL="$MYSQL_OPTIONS_LOCAL --user=$OCF_RESKEY_replication_user --password=$OCF_RESKEY_replication_passwd"
+MYSQL_OPTIONS_TEST="$MYSQL_OPTIONS_LOCAL --user=$OCF_RESKEY_test_user --password=$OCF_RESKEY_test_passwd"
+MYSQL_LAST_ERR=0
+MYSQL_TOO_MANY_CONN_ERR=1040
+
+CRM_MASTER="${HA_SBIN_DIR}/crm_master -l reboot "
+HOSTNAME=`uname -n`
+CRM_ATTR="${HA_SBIN_DIR}/crm_attribute -N $HOSTNAME "
+INSTANCE_ATTR_NAME=`echo ${OCF_RESOURCE_INSTANCE}| awk -F : '{print $1}'`
+CRM_ATTR_REPL_INFO="${HA_SBIN_DIR}/crm_attribute --type crm_config --name ${INSTANCE_ATTR_NAME}_REPL_INFO -s mysql_replication"
+CRM_ATTR_REPL_STATUS="${HA_SBIN_DIR}/crm_attribute --type crm_config --name ${INSTANCE_ATTR_NAME}_REPL_STATUS -s mysql_replication"
+CRM_RES="${HA_SBIN_DIR}/crm_resource"
+CRM_TICKET="${HA_SBIN_DIR}/crm_ticket"
+SSH="/usr/bin/ssh "
+ASYNC_STOP_WITNESS_FILE="${HA_RSCTMP}/stop_${INSTANCE_ATTR_NAME}"
+OCF_STOPPING=100  #custom error code for async_stop
+
+#######################################################################
+
+usage() {
+  cat <<UEND
+usage: $0 (start|stop|validate-all|meta-data|monitor|promote|demote|notify)
+
+$0 manages a MySQL Database as an HA resource.
+
+The 'start' operation starts the database.
+The 'stop' operation stops the database.
+The 'status' operation reports whether the database is running
+The 'monitor' operation reports whether the database seems to be working
+The 'promote' operation makes this mysql server run as master
+The 'demote' operation makes this mysql server run as slave
+The 'validate-all' operation reports whether the parameters are valid
+
+UEND
+}
+
+meta_data() {
+   cat <<END
+<?xml version="1.0"?>
+<!DOCTYPE resource-agent SYSTEM "ra-api-1.dtd">
+<resource-agent name="mysql">
+<version>1.0</version>
+
+<longdesc lang="en">
+Resource script for MySQL.
+May manage a standalone MySQL database, a clone set with externally
+managed replication, or a complete master/slave replication setup.
+
+While managing replication, the default behavior is to use uname -n
+values in the change master to command.  Other IPs can be specified
+manually by adding a node attribute \${INSTANCE_ATTR_NAME}_mysql_master_IP
+giving the IP to use for replication.  For example, if the mysql primitive
+you are using is p_mysql, the attribute to set will be
+p_mysql_mysql_master_IP.
+</longdesc>
+<shortdesc lang="en">Manages a MySQL database instance</shortdesc>
+<parameters>
+
+<parameter name="binary" unique="0" required="0">
+<longdesc lang="en">
+Location of the MySQL server binary
+</longdesc>
+<shortdesc lang="en">MySQL server binary</shortdesc>
+<content type="string" default="${OCF_RESKEY_binary_default}" />
+</parameter>
+
+<parameter name="client_binary" unique="0" required="0">
+<longdesc lang="en">
+Location of the MySQL client binary
+</longdesc>
+<shortdesc lang="en">MySQL client binary</shortdesc>
+<content type="string" default="${OCF_RESKEY_client_binary_default}" />
+</parameter>
+
+<parameter name="config" unique="0" required="0">
+<longdesc lang="en">
+Configuration file
+</longdesc>
+<shortdesc lang="en">MySQL config</shortdesc>
+<content type="string" default="${OCF_RESKEY_config_default}" />
+</parameter>
+
+<parameter name="datadir" unique="0" required="0">
+<longdesc lang="en">
+Directory containing databases
+</longdesc>
+<shortdesc lang="en">MySQL datadir</shortdesc>
+<content type="string" default="${OCF_RESKEY_datadir_default}" />
+</parameter>
+
+<parameter name="user" unique="0" required="0">
+<longdesc lang="en">
+User running MySQL daemon
+</longdesc>
+<shortdesc lang="en">MySQL user</shortdesc>
+<content type="string" default="${OCF_RESKEY_user_default}" />
+</parameter>
+
+<parameter name="group" unique="0" required="0">
+<longdesc lang="en">
+Group running MySQL daemon (for logfile and directory permissions)
+</longdesc>
+<shortdesc lang="en">MySQL group</shortdesc>
+<content type="string" default="${OCF_RESKEY_group_default}"/>
+</parameter>
+
+<parameter name="log" unique="0" required="0">
+<longdesc lang="en">
+The logfile to be used for mysqld.
+</longdesc>
+<shortdesc lang="en">MySQL log file</shortdesc>
+<content type="string" default="${OCF_RESKEY_log_default}"/>
+</parameter>
+
+<parameter name="pid" unique="0" required="0">
+<longdesc lang="en">
+The pidfile to be used for mysqld.
+</longdesc>
+<shortdesc lang="en">MySQL pid file</shortdesc>
+<content type="string" default="${OCF_RESKEY_pid_default}"/>
+</parameter>
+
+<parameter name="socket" unique="0" required="0">
+<longdesc lang="en">
+The socket to be used for mysqld.
+</longdesc>
+<shortdesc lang="en">MySQL socket</shortdesc>
+<content type="string" default="${OCF_RESKEY_socket_default}"/>
+</parameter>
+
+<parameter name="test_table" unique="0" required="0">
+<longdesc lang="en">
+Table to be tested in monitor statement (in database.table notation)
+</longdesc>
+<shortdesc lang="en">MySQL test table</shortdesc>
+<content type="string" default="${OCF_RESKEY_test_table_default}" />
+</parameter>
+
+<parameter name="test_user" unique="0" required="0">
+<longdesc lang="en">
+MySQL test user, must have select privilege on test_table
+</longdesc>
+<shortdesc lang="en">MySQL test user</shortdesc>
+<content type="string" default="${OCF_RESKEY_test_user_default}" />
+</parameter>
+
+<parameter name="test_passwd" unique="0" required="0">
+<longdesc lang="en">
+MySQL test user password
+</longdesc>
+<shortdesc lang="en">MySQL test user password</shortdesc>
+<content type="string" default="${OCF_RESKEY_test_passwd_default}" />
+</parameter>
+
+<parameter name="enable_creation" unique="0" required="0">
+<longdesc lang="en">
+If the MySQL database does not exist, it will be created
+</longdesc>
+<shortdesc lang="en">Create the database if it does not exist</shortdesc>
+<content type="boolean" default="${OCF_RESKEY_enable_creation_default}"/>
+</parameter>
+
+<parameter name="additional_parameters" unique="0" required="0">
+<longdesc lang="en">
+Additional parameters which are passed to the mysqld on startup.
+(e.g. --skip-external-locking or --skip-grant-tables)
+</longdesc>
+<shortdesc lang="en">Additional parameters to pass to mysqld</shortdesc>
+<content type="string" default="${OCF_RESKEY_additional_parameters_default}"/>
+</parameter>
+
+<parameter name="replication_user" unique="0" required="0">
+<longdesc lang="en">
+MySQL replication user. This user is used for starting and stopping
+MySQL replication, for setting and resetting the master host, and for
+setting and unsetting read-only mode. Because of that, this user must
+have SUPER, REPLICATION SLAVE, REPLICATION CLIENT, and PROCESS
+privileges on all nodes within the cluster. Mandatory if you define
+a master-slave resource.
+</longdesc>
+<shortdesc lang="en">MySQL replication user</shortdesc>
+<content type="string" default="${OCF_RESKEY_replication_user_default}" />
+</parameter>
+
+<parameter name="replication_passwd" unique="0" required="0">
+<longdesc lang="en">
+MySQL replication password. Used for replication client and slave.
+Mandatory if you define a master-slave resource.
+</longdesc>
+<shortdesc lang="en">MySQL replication user password</shortdesc>
+<content type="string" default="${OCF_RESKEY_replication_passwd_default}" />
+</parameter>
+
+<parameter name="replication_port" unique="0" required="0">
+<longdesc lang="en">
+The port on which the Master MySQL instance is listening.
+</longdesc>
+<shortdesc lang="en">MySQL replication port</shortdesc>
+<content type="string" default="${OCF_RESKEY_replication_port_default}" />
+</parameter>
+
+<parameter name="replication_options" unique="0" required="0">
+<longdesc lang="en">
+Extra options to pass to CHANGE MASTER, be sure to pass a preceeding comma.  Handy for SSL, for example:
+replication_options=", MASTER_SSL=1, MASTER_SSL_CA='/path/to/ca.crt'"
+</longdesc>
+<shortdesc lang="en">MySQL replication options</shortdesc>
+<content type="string" default="${OCF_RESKEY_replication_options_default}" />
+</parameter>
+
+<parameter name="max_slave_lag" unique="0" required="0">
+<longdesc lang="en">
+The maximum number of seconds a replication slave is allowed to lag
+behind its master. Do not set this to zero. What the cluster manager
+does in case a slave exceeds this maximum lag is determined by the
+evict_outdated_slaves parameter.
+</longdesc>
+<shortdesc lang="en">Maximum time (seconds) a MySQL slave is allowed
+to lag behind a master</shortdesc>
+<content type="integer" default="${OCF_RESKEY_max_slave_lag_default}"/>
+</parameter>
+
+<parameter name="evict_outdated_slaves" unique="0" required="0">
+<longdesc lang="en">
+If set to true, any slave which is more than max_slave_lag seconds
+behind the master has its MySQL instance shut down. If this parameter
+is set to false in a primitive or clone resource, it is simply
+ignored. If set to false in a master/slave resource, then exceeding
+the maximum slave lag will merely push down the master preference so
+the lagging slave is never promoted to the new master.
+</longdesc>
+<shortdesc lang="en">Determines whether to shut down badly lagging
+slaves</shortdesc>
+<content type="boolean" default="${OCF_RESKEY_evict_outdated_slaves_default}" />
+</parameter>
+
+<parameter name="reader_attribute" unique="1" required="0">
+<longdesc lang="en">
+An attribute that the RA can manage to specify whether a node
+can be read from. This node attribute will be 1 if it's fine to
+read from the node, and 0 otherwise (for example, when a slave
+has lagged too far behind the master).
+
+A typical example for the use of this attribute would be to tie
+a set of IP addresses to MySQL slaves that can be read from.
+
+This parameter is only meaningful in master/slave set configurations.
+</longdesc>
+<shortdesc lang="en">Sets the node attribute that determines
+whether a node is usable for clients to read from.</shortdesc>
+<content type="string" default="${OCF_RESKEY_reader_attribute_default}" />
+</parameter>
+<parameter name="reader_failcount" unique="1" required="0">
+<longdesc lang="en">
+The number of times a monitor operation can find the slave
+to be unsuitable for reader VIP before failing.  Useful if
+there are short intermittent issues like clock adjustments in VMs.
+</longdesc>
+<shortdesc lang="en">Allowed failcount for reader</shortdesc>
+<content type="integer" default="${OCF_RESKEY_reader_failcount_default}" />
+</parameter>
+
+<parameter name="backup_lockfile" unique="1" required="0">
+<longdesc lang="en">
+The path to a file that will be exclusively locked by any backup
+process. The lockfile serves to provide a reliable way of determining
+whether to restart the slave process or not. If a thirdparty process
+locks this file, the agent will fail to lock the file and will not
+start the slave. When this agent is able to lock the file, it is
+assumed that backups are finished and the slave thread should be
+running and will start it.
+
+A typical cron command example would be like:
+flock -xn /var/lock/innobackupex innobackupex --safe-slave-backup /tmp/mysqlbackup
+
+This example will use innobackupex's ability to stop the slave when necessary
+to ensure backup consistency. During this time the agent will not start the
+slave. Once the backup is complete, the lock will automatically expire and
+the agent can start the slave if it isn't already.
+</longdesc>
+<shortdesc lang="en">Path to backup lockfile</shortdesc>
+<content type="string" default="${OCF_RESKEY_backup_lockfile_default}" />
+</parameter>
+
+<parameter name="geo_remote_IP" unique="1" required="0">
+<longdesc lang="en">
+In case multiple Geo redundant sites are connected with the booth protocol
+this is the IP to use to connect to the remote cluster to query replication info.
+Normally this would be the writer VIP on the remote cluster.  Also, ssh is used
+for communication so make sure keys are exchanged and that ssh options are set
+in a way that connection doesn't take many seconds.  If empty, the booth type
+behavior is not triggered.
+</longdesc>
+<shortdesc lang="en">IP of the remote cluster</shortdesc>
+<content type="string" default="" />
+</parameter>
+
+<parameter name="geo_remote_user" unique="1" required="0">
+<longdesc lang="en">
+When geo_remote_IP is not empty, this will be the custom SSH user that can be 
+used to connect to remote sites.
+</longdesc>
+<shortdesc lang="en">SSH user for remote-enabled sites</shortdesc>
+<content type="string" default="root" />
+</parameter>
+
+<parameter name="geo_remote_opts" unique="1" required="0">
+<longdesc lang="en">
+When geo_remote_IP is not empty, this will be the custom SSH options that can be
+used to connect to remote sites.
+</longdesc>
+<shortdesc lang="en">SSH options for remote-enabled sites</shortdesc>
+<content type="string" default="" />
+</parameter>
+
+<parameter name="booth_master_ticket" unique="1" required="0">
+<longdesc lang="en">
+In case multiple Geo redundant sites are connected with the booth protocol
+this is the name of the ticket used to identify the master side.
+</longdesc>
+<shortdesc lang="en">Booth ticket name</shortdesc>
+<content type="string" default="${OCF_RESKEY_booth_master_ticket_default}" />
+</parameter>
+
+<parameter name="post_promote_script" unique="1" required="0">
+<longdesc lang="en">
+Allows to run custom code following a promotion.  An application of this is to
+prevent fail-back of the master role after an initial failover.
+</longdesc>
+<shortdesc lang="en">Post promote script</shortdesc>
+<content type="string" default="" />
+</parameter>
+
+<parameter name="async_stop" unique="0" required="0">
+<longdesc lang="en">
+If set to true, PRM will not wait for MySQL to stop after sending the 
+SIGTERM signal.  This can be useful to speed up failover when a server has a 
+large number of dirty pages and takes a long time to shutdown, or worse, receives
+a SIGKILL after the stop timeout.  The main drawback is that if PRM wants to restart
+MySQL before it completed its shutdown, the operation will error out.
+</longdesc>
+<shortdesc lang="en">Asynchronous stop of MySQL</shortdesc>
+<content type="boolean" default="${OCF_RESKEY_async_stop_default}" />
+</parameter>
+
+</parameters>
+
+<actions>
+<action name="start" timeout="120" />
+<action name="stop" timeout="120" />
+<action name="status" timeout="60" />
+<action name="monitor" depth="0" timeout="30" interval="20" />
+<action name="monitor" role="Master" depth="0" timeout="30" interval="10" />
+<action name="monitor" role="Slave" depth="0" timeout="30" interval="30" />
+<action name="promote" timeout="120" />
+<action name="demote" timeout="120" />
+<action name="notify" timeout="90" />
+<action name="validate-all" timeout="5" />
+<action name="meta-data" timeout="5" />
+</actions>
+</resource-agent>
+END
+}
+
+# Convenience functions
+
+set_read_only() {
+   # Sets or unsets read-only mode. Accepts one boolean as its
+   # optional argument. If invoked without any arguments, defaults to
+   # enabling read only mode. Should only be set in master/slave
+   # setups.
+   # Returns $OCF_SUCCESS if the operation succeeds, or
+   # $OCF_ERR_GENERIC if it fails.
+   local ro_val
+   if ocf_is_true $1; then
+      ro_val="on"
+   else
+      ro_val="off"
+   fi
+   mysql_run -Q -sw $MYSQL $MYSQL_OPTIONS_REPL \
+   -e "SET GLOBAL read_only=${ro_val}"
+}
+
+get_read_only() {
+   # Check if read-only is set
+   local read_only_state
+   
+   read_only_state=`mysql_run -Q -sw -O $MYSQL -N $MYSQL_OPTIONS_REPL \
+   -e "SHOW VARIABLES like 'read_only'" | awk '{print $2}'`
+   
+   if [ "$read_only_state" = "ON" ]; then
+      return 0
+   else
+      return 1
+   fi
+}
+
+is_slave() {
+   # Determine whether the machine is currently running as a MySQL
+   # slave, as determined per SHOW SLAVE STATUS. Returns 1 if SHOW
+   # SLAVE STATUS creates an empty result set, 0 otherwise.
+   local rc
+   local tmpfile
+   
+   # Check whether this machine should be slave
+   if ! ocf_is_ms || ! get_read_only; then
+      return 1
+   fi
+   
+   get_slave_info
+   rc=$?
+   
+   if [ $rc -eq 0 ]; then
+      # show slave status is not empty
+      # Is there a master_uuid defined?  (master_uuid is deleted
+      # by reset slave
+      # with GTID, it is possible that $master_log_file is not defined yet, 
+      # as it connects, with MASTER_AUTO_POSITION=1, it needs to find the
+      # binlog file and position, using $master_uuid instead.
+      if [ "$master_uuid" ]; then
+         return 0
+      else
+         return 1
+      fi
+   else
+      # "SHOW SLAVE STATUS" returns an empty set if instance is not a
+      # replication slave
+      return 1
+   fi
+   
+}
+
+parse_slave_info() {
+   # Extracts field $1 from result of "SHOW SLAVE STATUS\G" from file $2
+   sed -ne "s/^.* $1: \(.*\)$/\1/p" < $2
+}
+
+get_slave_info() {
+   
+   local mysql_options tmpfile
+   
+   # with GTID, it is possible that $master_log_file is not defined yet, 
+   # as it connects, with MASTER_AUTO_POSITION=1, it needs to find the
+   # binlog file and position, using $master_uuid instead.
+   if [ "$master_uuid" -a "$master_host" ]; then
+      # variables are already defined, get_slave_info has been run before
+      return $OCF_SUCCESS
+   else
+      tmpfile=`mktemp ${HA_RSCTMP}/check_slave.${OCF_RESOURCE_INSTANCE}.XXXXXX`
+      
+      mysql_run -Q -sw -O $MYSQL $MYSQL_OPTIONS_REPL \
+      -e 'SHOW SLAVE STATUS\G' > $tmpfile
+      
+      if [ -s $tmpfile ]; then
+         master_host=`parse_slave_info Master_Host $tmpfile`
+         master_user=`parse_slave_info Master_User $tmpfile`
+         master_port=`parse_slave_info Master_Port $tmpfile`
+         master_log_file=`parse_slave_info Master_Log_File $tmpfile`
+         master_log_pos=`parse_slave_info Read_Master_Log_Pos $tmpfile`
+         master_uuid=`parse_slave_info Master_UUID $tmpfile`
+         retrieved_gtid=`parse_slave_info Retrieved_Gtid_Set $tmpfile`
+         executed_gtid=`parse_slave_info Executed_Gtid_Set $tmpfile`
+         slave_sql=`parse_slave_info Slave_SQL_Running $tmpfile`
+         slave_io=`parse_slave_info Slave_IO_Running $tmpfile`
+         slave_io_state=`parse_slave_info Slave_IO_State $tmpfile`
+         last_errno=`parse_slave_info Last_Errno $tmpfile`
+         secs_behind=`parse_slave_info Seconds_Behind_Master $tmpfile`
+         auto_position=`parse_slave_info Auto_Position $tmpfile`
+         ocf_log debug "MySQL instance has a non empty slave status"
+      else
+         # Instance produced an empty "SHOW SLAVE STATUS" output --
+         # instance is not a slave
+         
+         
+         
+         ocf_log err "check_slave invoked on an instance that is not a replication slave."
+         rm -f $tmpfile
+         return $OCF_ERR_GENERIC
+      fi
+      rm -f $tmpfile
+      return $OCF_SUCCESS
+   fi
+}
+
+check_slave() {
+   # Checks slave status
+   local rc new_master
+   
+   get_slave_info
+   rc=$?
+   
+   if [ $rc -eq 0 ]; then
+      # Did we receive an error other than max_connections?
+      if [ $last_errno -ne 0 -a $last_errno -ne "$MYSQL_TOO_MANY_CONN_ERR" ]; then
+         # Whoa. Replication ran into an error. This slave has
+         # diverged from its master. Make sure this resource
+         # doesn't restart in place.
+         ocf_log err "MySQL instance configured for replication, but replication has failed."
+         
+         # Just pull the reader VIP away, killing MySQL here would be pretty evil
+         # on a loaded server
+         set_reader_attr 0
+         
+         #Since replication is broken, not suitable to be a master
+         $CRM_MASTER -v -INF
+         
+         exit $OCF_SUCCESS
+         
+      fi
+      
+      # If we got max_connections, let's only remove the vip
+      if [ $last_errno -eq "$MYSQL_TOO_MANY_CONN_ERR" ]; then
+         set_reader_attr 0
+         exit $OCF_SUCCESS
+      fi
+      
+      if [ "$slave_io" != 'Yes' ]; then
+         # Not necessarily a bad thing. The master may have
+         # temporarily shut down, and the slave may just be
+         # reconnecting. A warning can't hurt, though.
+         ocf_log warn "MySQL Slave IO threads currently not running."
+         
+         # Sanity check, are we at least on the right master
+         if [ "$master_host" != "$glb_cib_master" ]; then
+            # Not pointing to the right master
+            
+            # Is this a recent master failover on the remote side
+            if [ "${#glb_remote_info}" -gt "0" -a "$slave_sql" = 'Yes' ]; then
+               # looks like, the sql thread is still running, no need
+               # to remove the vip, doing nothing
+               :
+            else
+               set_reader_attr 0
+            fi
+            
+            # try setting up the slave with the new master
+            set_master
+            exit $OCF_SUCCESS
+            
+            elif [ "$slave_sql" == 'Yes' ]; then
+            # If the slq thread is running, it is an issue with the io thread
+            # let's try to restart it
+            
+            if [ "$slave_io_state" != "" ]; then
+               # The io thread is running but is not connected, let's restart it.
+               mysql_run -Q -sw $MYSQL $MYSQL_OPTIONS_REPL \
+               -e "STOP SLAVE IO_THREAD"
+            fi
+            
+            # At this point, the io_thread should be stopped.
+            # let's try to start it again.
+            
+            mysql_run -Q -sw $MYSQL $MYSQL_OPTIONS_REPL \
+            -e "START SLAVE IO_THREAD"
+            
+            # We give some time to connect
+            sleep 2
+            
+            get_slave_info
+            rc=$?
+            if [ $rc -eq 0 -a "$slave_io" == 'Yes' ]; then
+               ocf_log info "MySQL Slave IO thread started succesfully."
+            else
+               ocf_log warn "We could not start the MySQL Slave IO thread."
+            fi
+         fi
+      fi
+      
+      if [ "$slave_sql" != 'Yes' ]; then
+         # We don't have a replication SQL thread running. Not a
+         # good thing. Try to recoved by restarting the SQL thread
+         # and remove reader vip.  Prevent MySQL restart.
+         ocf_log err "MySQL Slave SQL threads currently not running."
+         
+         # Remove reader vip
+         set_reader_attr 0
+         $CRM_MASTER -v -INF
+         
+         # Check that the flock tool exists first
+         if type flock &>/dev/null; then
+            (
+               flock -xn 8
+               if [ $? -eq 0 ]; then
+                  mysql_run -Q -sw $MYSQL $MYSQL_OPTIONS_REPL \
+                  -e "START SLAVE"
+               else
+                  ocf_log info "Unable to lock $OCF_RESKEY_backup_lockfile. Not starting slave."
+               fi
+            ) 8>$OCF_RESKEY_backup_lockfile
+         else
+            # try to restart slave
+            mysql_run -Q -sw $MYSQL $MYSQL_OPTIONS_REPL \
+            -e "START SLAVE"
+         fi
+         
+         # Return success to prevent a restart
+         exit $OCF_SUCCESS
+      fi
+      
+      if ocf_is_true $OCF_RESKEY_evict_outdated_slaves; then
+         # We're supposed to bail out if we lag too far
+         # behind. Let's check our lag.
+         if [ $secs_behind -gt $OCF_RESKEY_max_slave_lag ]; then
+            ocf_log err "MySQL Slave is $secs_behind seconds behind master (allowed maximum: $OCF_RESKEY_max_slave_lag)."
+            
+            # Remove reader vip
+            set_reader_attr 0
+            exit $OCF_ERR_INSTALLED
+         fi
+         elif ocf_is_ms; then
+         # Even if we're not set to evict lagging slaves, we can
+         # still use the seconds behind master value to set our
+         # master preference.
+         local master_pref
+         master_pref=$((${OCF_RESKEY_max_slave_lag}-${secs_behind}))
+         if [ $master_pref -lt 0 ]; then
+            # Sanitize a below-zero preference to just zero
+            master_pref=0
+         fi
+         $CRM_MASTER -v $master_pref
+      fi
+      
+      # is the slave ok to have a VIP on it
+      test $secs_behind -eq 0 2>/dev/null
+      if [ $? -eq 2 ]; then
+         set_reader_attr 0
+      else
+         if [ $secs_behind -gt $OCF_RESKEY_max_slave_lag ]; then
+            set_reader_attr 0
+         else
+            set_reader_attr 1
+            
+            #Edge case verification, check if on the right master
+            set_master nologging
+         fi
+      fi
+      
+      ocf_log debug "MySQL instance running as a replication slave"
+   else
+      # Instance produced an empty "SHOW SLAVE STATUS" output --
+      # instance is not a slave
+      # TODO: Needs to handle when get_slave_info will return too many connections error
+      
+      if [ $MYSQL_LAST_ERR -eq "$MYSQL_TOO_MANY_CONN_ERR" ]; then
+         # Remove the vip
+         set_reader_attr 0
+         return $OCF_SUCCESS
+      fi
+      
+      # An empty status could happen when a master is demote in a
+      # geo DR setup, let's check
+      if [ $MYSQL_LAST_ERR -eq 0 -a $glb_master_exists -eq 1 ]; then
+         # This is not the master side, let's try to setup the slave
+         # No need to unset the master since slave status is empty
+         set_reader_attr 0
+         set_master
+         return $OCF_SUCCESS
+      fi
+      
+      ocf_log err "check_slave invoked on an instance that is not a replication slave."
+      exit $OCF_ERR_GENERIC
+   fi
+}
+
+set_master() {
+   # has we are on 5.6 with GTID and Auto_Position = 1
+   # we still need to verify this ... but TODO
+   local new_master master_log_file master_log_pos new_master_info
+   local master_params new_master_log_file new_master_log_pos
+   local bootstrap_master
+   bootstrap_master=0
+   
+   if [ "$glb_master_exists" ]; then
+      if [ "${#glb_remote_info}" -gt "0" ]; then
+         # geo_remote_IP is defined, let's do the booth part
+         
+         if [ $glb_master_side -ne 0 ]; then
+            # this is _not_ the side with the token
+            new_master_info=`echo $glb_remote_info | awk '{ print $1 }'`
+            new_master=`echo $new_master_info | cut -d'|' -f1`
+         fi
+      fi
+      
+      if [ "${#new_master_info}" -eq "0" ]; then
+         new_master_info=`$CRM_ATTR_REPL_INFO --query  -q`
+         # check if we have a master defined in crm
+         rc=$?
+         if [ $rc -ne 0 ]; then
+            # no REPL_INFO in crm yet, let's see if we have
+            # manually configured it earlier
+            bootstrap_master=1
+            ocf_log warn "No p_mysql_REPL_INFO configured yet, we plan to bootstrap a new master"
+         fi
+         new_master=`echo $new_master_info | cut -d'|' -f1`
+      fi
+      
+      # Keep replication position
+      get_slave_info
+      
+      # check if auto_position is defined (replication is running)
+      # and it is set to 0. This means it was not correctly configured
+      # so we need to stop replication and reconfigure it 
+      if [ "$auto_position" == "0" ]; then
+         ocf_log warn "Auto position is not enabled, we force it"
+         mysql_run -Q -sw $MYSQL $MYSQL_OPTIONS_REPL \
+         -e "STOP SLAVE;CHANGE MASTER TO \
+            MASTER_AUTO_POSITION=1; \
+            START SLAVE;"
+      fi
+      
+      # with GTID, it is possible that $master_log_file is not defined yet, 
+      # as it connects, with MASTER_AUTO_POSITION=1, it needs to find the
+      # binlog file and position, using $master_uuid instead.
+      if [ "$master_uuid" -a "$new_master" = "$master_host" ]; then
+         #	master_params=", MASTER_LOG_FILE='$master_log_file', \
+         #	    MASTER_LOG_POS=$master_log_pos"
+         if [ "$1" = "nologging" ]; then
+            :
+         else
+            ocf_log info "Kept master pos for $master_host : $master_log_file:$master_log_pos \
+            master_uuid:$master_uuid executed_gtid_set:$executed_gtid_set"
+         fi
+         return
+      fi
+      
+      # Informs the MySQL server of the master to replicate
+      # from. Accepts one mandatory argument which must contain the host
+      # name of the new master host. The master must either be unchanged
+      # from the laste master the slave replicated from, or freshly
+      # reset with RESET MASTER.
+      
+      if [ $bootstrap_master -eq 0 ]; then
+         mysql_run -Q -sw $MYSQL $MYSQL_OPTIONS_REPL \
+         -e "STOP SLAVE;CHANGE MASTER TO MASTER_HOST='$new_master', \
+            MASTER_PORT=$OCF_RESKEY_replication_port, \
+            MASTER_USER='$OCF_RESKEY_replication_user', \
+            MASTER_PASSWORD='$OCF_RESKEY_replication_passwd', \
+            MASTER_AUTO_POSITION=1 \
+         $OCF_RESKEY_replication_options ;START SLAVE;"
+      fi
+   fi
+}
+
+unset_master(){
+   # Instructs the MySQL server to stop replicating from a master
+   # host.
+   
+   # If we're currently not configured to be replicating from any
+   # host, then there's nothing to do. But we do log a warning as
+   # no-one but the CRM should be touching the MySQL master/slave
+   # configuration.
+   
+   is_slave
+   rc=$?
+   if [ $rc -ne 0 ]; then
+      ocf_log warn "Attempted to unset the replication master on an instance that is not configured as a replication slave"
+      return $OCF_SUCCESS
+   fi
+   
+   local tmpfile
+   tmpfile=`mktemp ${HA_RSCTMP}/unset_master.${OCF_RESOURCE_INSTANCE}.XXXXXX`
+   
+   # At this point, the master is read only so there should not be much binlogs to transfer
+   # Let's wait for the last bits
+   while true; do
+      get_slave_info
+      rc=$?
+      
+      # Is the slave_io thread running?
+      if [ "$slave_io" != 'Yes' ]; then
+         ocf_log info "Slave IO thread not running, master likely dead or stopped"
+         break;
+      fi
+      
+      mysql_run -Q -sw -O $MYSQL $MYSQL_OPTIONS_REPL \
+      -e 'SHOW PROCESSLIST\G' > $tmpfile
+      
+      if grep -i 'Waiting for master to send event' $tmpfile >/dev/null; then
+         ocf_log info "MySQL slave has finished reading master binary log"
+         break
+      fi
+      if grep -i 'Reconnecting after a failed master event read' $tmpfile >/dev/null; then
+         ocf_log info "Master is down, no more binary logs to come"
+         break
+      fi
+      if grep -i 'Connecting to master' $tmpfile >/dev/null; then
+         ocf_log info "Master is down, no more binary logs to come"
+         break
+      fi
+      if ! grep 'system user' $tmpfile >/dev/null; then
+         ocf_log info "Slave is not running - not waiting to finish"
+         break
+      fi
+      
+      sleep 1
+   done
+   
+   # Now, stop the slave I/O thread and wait for relay log
+   # processing to complete
+   mysql_run -Q -sw $MYSQL $MYSQL_OPTIONS_REPL \
+   -e "STOP SLAVE IO_THREAD"
+   if [ $? -gt 0 ]; then
+      ocf_log err "Error stopping slave IO thread"
+      rm -f $tmpfile
+      exit $OCF_ERR_GENERIC
+   fi
+   
+   while true; do
+      mysql_run -Q -sw -O $MYSQL $MYSQL_OPTIONS_REPL \
+      -e 'SHOW PROCESSLIST\G' > $tmpfile
+      if grep -i 'Has read all relay log' $tmpfile >/dev/null; then
+         ocf_log info "MySQL slave has finished processing relay log"
+         break
+      fi
+      if ! grep -q 'system user' $tmpfile; then
+         ocf_log info "Slave not runnig - not waiting to finish"
+         break
+      fi
+      ocf_log info "Waiting for MySQL slave to finish processing relay log"
+      sleep 1
+   done
+   rm -f $tmpfile
+   
+   # Now, stop all slave activity and unset the master host
+   mysql_run -Q -sw $MYSQL $MYSQL_OPTIONS_REPL \
+   -e "STOP SLAVE"
+   if [ $? -gt 0 ]; then
+      ocf_log err "Error stopping rest slave threads"
+      exit $OCF_ERR_GENERIC
+   fi
+   
+   # a last get_slave_info to save the status in variables may be needed
+   # by pre-promote notification
+   unset master_host  # need to unset for get_slave_info to run
+   get_slave_info   
+   
+   mysql_run -Q -sw $MYSQL $MYSQL_OPTIONS_REPL \
+   -e "RESET SLAVE /*!50516 ALL */;"
+   if [ $? -gt 0 ]; then
+      ocf_log err "Failed to reset slave"
+      exit $OCF_ERR_GENERIC
+   fi
+}
+
+# Start replication as slave
+start_slave() {
+   mysql_run -Q -sw $MYSQL $MYSQL_OPTIONS_REPL \
+   -e "START SLAVE"
+}
+
+# Set the attribute controlling the readers VIP
+set_reader_attr() {
+   local curr_attr_value
+   
+   curr_attr_value=$(get_reader_attr)
+   
+   if [ "$1" -eq "0" ]; then
+      if [ "$curr_attr_value" -gt "0" ]; then
+         curr_attr_value=$((${curr_attr_value}-1))
+         $CRM_ATTR -l reboot --name ${OCF_RESKEY_reader_attribute} -v $curr_attr_value
+      else
+         $CRM_ATTR -l reboot --name ${OCF_RESKEY_reader_attribute} -v 0
+      fi
+   else
+      if [ "$curr_attr_value" -ne "$OCF_RESKEY_reader_failcount" ]; then
+         $CRM_ATTR -l reboot --name ${OCF_RESKEY_reader_attribute} -v $OCF_RESKEY_reader_failcount
+      fi
+   fi
+   
+}
+
+is_master_side() {
+   #Returns true (0) if this cluster has a grant for the booth ticket OCF_RESKEY_booth_master_ticket
+   local ticket crmTicketRet
+   
+   if [ "${#OCF_RESKEY_geo_remote_IP}" -gt "0" ]; then
+      #Try the new format
+      crmTicketRet=`file $CRM_TICKET | grep -c 'Bourne-Again shell script'`
+      if [ "$crmTicketRet" -eq "1" ]; then
+         # got an error, we assume the old format
+         ticket=`$CRM_TICKET -t $OCF_RESKEY_booth_master_ticket -Q | grep -c 'true'`
+      else
+         ticket=`$CRM_TICKET --info | grep $OCF_RESKEY_booth_master_ticket | awk '{ print $2 }' | grep -c granted`
+      fi
+      
+      if [ "$ticket" -eq "1" ]; then
+         return 0
+      else
+         return 1
+      fi
+   else
+      return 0
+   fi
+}
+
+# get the attribute controlling the readers VIP
+get_reader_attr() {
+   local attr_value
+   local rc
+   
+   attr_value=`$CRM_ATTR -l reboot --name ${OCF_RESKEY_reader_attribute} --query -q`
+   rc=$?
+   if [ "$rc" -eq "0" ]; then
+      echo $attr_value
+   else
+      echo -1
+   fi
+   
+}
+
+# Stores data for MASTER STATUS from MySQL
+update_data_master_status() {
+   local server_uuid last_gtid
+   master_status_file="${HA_RSCTMP}/master_status.${OCF_RESOURCE_INSTANCE}"
+   
+   mysql_run -Q -sw -O $MYSQL $MYSQL_OPTIONS_REPL -BN -e "select variable_name,replace(variable_value,'\n','') as variable_value from information_schema.global_variables where variable_name in ('server_uuid','gtid_executed')" > $master_status_file
+   
+}
+
+# Returns the master status from the global variable, namely the uuid and last_gtid.
+# should be call after update_data_master_status for tmpfile
+get_master_status() {
+   local server_uuid last_gtid
+   
+   server_uuid=`cat $master_status_file | grep SERVER_UUID | awk '{ print $2 }'`
+   last_gtid=`cat $master_status_file | grep GTID_EXECUTED | sed "s/.*$server_uuid:[0-9]*-\([0-9]*\).*/\1/"`
+   
+   echo "$server_uuid:$last_gtid"
+}
+
+# Determines what IP address is attached to the current host.  The output of the
+# crm_attribute command looks like this:
+# scope=nodes  name=IP value=10.2.2.161
+# If the ${INSTANCE_ATTR_NAME}_MYSQL_MASTER_IP node attribute is not defined, fallback is to uname -n
+# The ${INSTANCE_ATTR_NAME}_MYSQL_MASTER_IP is the IP address that will be used for the
+# change master to command.
+get_local_ip() {
+   local IP
+   IP=`$CRM_ATTR -l forever -n ${INSTANCE_ATTR_NAME}_mysql_master_IP -q -G`
+   if [ ! $? -eq 0 ]; then
+      uname -n
+   else
+      echo $IP
+   fi
+}
+
+#######################################################################
+
+# Functions invoked by resource manager actions
+
+mysql_validate() {
+   check_binary $OCF_RESKEY_binary
+   check_binary  $OCF_RESKEY_client_binary
+   
+   if [ ! -f $OCF_RESKEY_config ]; then
+      ocf_log err "Config $OCF_RESKEY_config doesn't exist";
+      return $OCF_ERR_INSTALLED;
+   fi
+   
+   if [ ! -d $OCF_RESKEY_datadir ]; then
+      ocf_log err "Datadir $OCF_RESKEY_datadir doesn't exist";
+      return $OCF_ERR_INSTALLED;
+   fi
+   
+   getent passwd $OCF_RESKEY_user >/dev/null 2>&1
+   if [ ! $? -eq 0 ]; then
+      ocf_log err "User $OCF_RESKEY_user doesn't exit";
+      return $OCF_ERR_INSTALLED;
+   fi
+   
+   getent group $OCF_RESKEY_group >/dev/null 2>&1
+   if [ ! $? -eq 0 ]; then
+      ocf_log err "Group $OCF_RESKEY_group doesn't exist";
+      return $OCF_ERR_INSTALLED;
+   fi
+   
+   true
+}
+
+# Return the status of mysqld
+# $1 the loglevel to use (mandatory)
+# $2 Override async_stop if 1, default to 0
+mysql_status() {
+   local last_restart_ts
+   local kill_exit_code
+   local witness_pid
+   local override_async_stop
+   
+   override_async_stop=0
+   
+   if [ -n $2 ]; then
+      override_async_stop=$2
+   fi
+ 
+   if [ ! -e $OCF_RESKEY_pid ]; then
+      ocf_log $1 "MySQL is not running"
+      
+      if [ -e $ASYNC_STOP_WITNESS_FILE ]; then
+         # MySQL is stopped and there's a witness file, cleanup
+         rm -f $ASYNC_STOP_WITNESS_FILE
+      fi      
+      
+      return $OCF_NOT_RUNNING;
+   fi
+   
+   pid=`cat $OCF_RESKEY_pid`;
+   if [ -d /proc -a -d /proc/1 ]; then
+      [ "u$pid" != "u" -a -d /proc/$pid ]
+   else
+      kill -s 0 $pid >/dev/null 2>&1
+   fi
+
+   kill_exit_code=$?
+   
+   if [ "$OCF_RESKEY_async_stop" -eq "1" -a \
+         -e $ASYNC_STOP_WITNESS_FILE ]; then
+         
+      # Async stop seems to be in progress
+      witness_pid=`cat $ASYNC_STOP_WITNESS_FILE | grep pid | cut -d':' -f2`
+      
+      if [ $kill_exit_code -eq 0 -a $witness_pid -eq $pid ]; then
+         
+         # Should we lie or tell the truth
+         if [ "$override_async_stop" -eq "0" ]; then
+            # we lie
+            # still running but because of async, we report stopped
+            return $OCF_NOT_RUNNING
+         else
+            # we tell the truth
+            return $OCF_STOPPING #custom error code
+         fi
+      else
+         # That shouldn't happen execpt if SIGKILL, cleanup
+         rm -f $ASYNC_STOP_WITNESS_FILE
+      fi
+   fi
+   
+   if [ $kill_exit_code -eq 0 ]; then
+      return $OCF_SUCCESS
+   else
+      ocf_log $1 "MySQL not running: removing old PID file"
+      rm -f $OCF_RESKEY_pid
+      
+      # This is abnormal, is this host the master defined in the cib?
+      # Also confirm it succeed in starting with the socket file
+      if [ "$glb_master_exists" -eq "1" ]; then
+         if [ "$glb_cib_master" =  $(get_local_ip) -a -e "$OCF_RESKEY_socket" ]; then
+            # This is the master, let's give it a change to restart
+            # that will allow the slaves a better chance to sync but we
+            # need to avoid letting it restart forever.  Has it tried to
+            # restart within the last hour
+            last_crash_ts=`$CRM_ATTR -l reboot --name ${INSTANCE_ATTR_NAME}_last_crash --query -q`
+            
+            if [[ ! -z $last_crash_ts ]]; then
+               if [ `date +%s` -lt "$((${last_crash_ts}+3600))" ]; then
+                  # too soon, multiple crash, let's error out
+                  return $OCF_NOT_RUNNING
+               fi
+            fi
+            
+            $CRM_ATTR -l reboot --name ${INSTANCE_ATTR_NAME}_last_crash -v `date +%s`
+            
+            mysql_start_low
+            rc=$?
+            
+            if [ "$rc" -eq "0" ]; then
+               set_read_only OFF
+            fi
+            
+            return $rc
+         fi
+      fi
+      return $OCF_NOT_RUNNING
+   fi
+}
+
+mysql_monitor() {
+   local rc
+   local status_loglevel="err"
+   local master_resource
+   local master_status_attr
+   local new_master_status_attr
+   
+   : ${OCF_RESKEY_CRM_meta_interval=0}
+   
+   # Set loglevel to info during probe
+   if ocf_is_probe; then
+      status_loglevel="info"
+   fi
+   
+   mysql_status $status_loglevel
+   
+   rc=$?
+   
+   # TODO: check max connections error
+   
+   # If status returned an error, return that immediately
+   if [ $rc -ne $OCF_SUCCESS ]; then
+      return $rc
+   fi
+   
+   
+   if [ $OCF_CHECK_LEVEL -gt 0 -a -n "$OCF_RESKEY_test_table" ]; then
+      # Check if this instance is configured as a slave, and if so
+      # check slave status
+      
+      # Are we currently having a master?
+      if [ "$glb_master_exists" -ne "0" ]; then
+         is_slave
+         rc=$?
+         if [ $rc -eq 0 -o "$OCF_RESKEY_CRM_meta_role" = "Slave" ]; then
+            check_slave
+         else
+            update_data_master_status
+            master_status_attr=`$CRM_ATTR_REPL_STATUS --query  -q`
+            new_master_status_attr="$(get_master_status)"
+            rm -f $master_status_file
+            if [ "$master_status_attr" != "$new_master_status_attr" ]; then
+               $CRM_ATTR_REPL_STATUS -v "$new_master_status_attr"
+            fi
+         fi
+      else
+         is_slave
+         rc=$?
+         if [ $rc -eq 0 -o "$OCF_RESKEY_CRM_meta_role" = "Slave" ]; then
+            unset_master
+            set_reader_attr 0
+         fi
+      fi
+      
+      # Check for test table
+      mysql_run -Q -sw $MYSQL $MYSQL_OPTIONS_TEST \
+      -e "SELECT COUNT(*) FROM $OCF_RESKEY_test_table"
+      
+      
+      if [ $MYSQL_LAST_ERR -ne "$MYSQL_TOO_MANY_CONN_ERR" ]; then
+         if [ $MYSQL_LAST_ERR -ne 0 ]; then
+            ocf_log err "Failed to select from $OCF_RESKEY_test_table";
+            return $OCF_ERR_GENERIC;
+         fi
+      else
+         ocf_log info "Master hit max_connections"
+      fi
+   fi
+   
+   
+   if ocf_is_ms && ! get_read_only; then
+      ocf_log debug "MySQL monitor succeeded (master)";
+      if [ "$OCF_RESKEY_CRM_meta_interval" -eq "0" ]; then
+         # this is a probe and this server is a master so need to set master_score
+         $CRM_MASTER -v $((${OCF_RESKEY_max_slave_lag}+1000))
+      fi
+      return $OCF_RUNNING_MASTER
+   else
+      ocf_log debug "MySQL monitor succeeded";
+      return $OCF_SUCCESS
+   fi
+   
+}
+
+# Start MySQL in the master-slave context
+mysql_start() {
+   local current_status
+   
+   if ocf_is_ms; then
+      # Initialize the ReaderVIP attribute, monitor will enable it
+      set_reader_attr 0
+      
+      # set master_score to 0 in case mysql crashes on startup
+      $CRM_MASTER -v 0
+   fi
+
+   mysql_status info 1   # Adding 2nd param here to get the true state in case
+                        # async_stop is used
+   current_status=$?
+   if [ "$current_status" = "$OCF_SUCCESS" ]; then   
+     ocf_log info "MySQL already running"
+     return $OCF_SUCCESS
+   fi
+
+   # Is MySQL still stopping, OCF_STOPPING is a custom error code
+   if [ "$current_status" = "$OCF_STOPPING" ]; then
+      ocf_log err "MySQL asked to start while still stopping"
+      return $OCF_ERR_GENERIC
+   fi
+   
+   mysql_start_low
+   rc=$?
+
+   if [ $rc != $OCF_SUCCESS ]; then
+      ocf_log err "Wasn't able to start MySQL, stopping 'start'."
+      return $rc
+   fi
+   
+   if ocf_is_ms; then
+      # We're configured as a stateful resource. We must start as
+      # slave by default. At this point we don't know if the CRM has
+      # already promoted a master. So, we simply start in read only
+      # mode.  Should already be from command line.
+      set_read_only on
+      
+      # Now, let's see whether there is a master. We might be a new
+      # node that is just joining the cluster, and the CRM may have
+      # promoted a master before.
+      
+      if [ "$glb_master_exists" -ne 0 -a "$glb_cib_master" != $(get_local_ip) ]; then
+         ocf_log info "Changing MySQL configuration to replicate from $master_host."
+         set_master
+         start_slave
+         if [ $? -ne 0 ]; then
+            ocf_log err "Failed to start slave"
+            return $OCF_ERR_GENERIC
+         fi
+      else
+         ocf_log info "No MySQL master present - clearing replication state"
+         unset_master
+      fi
+      
+      # We also need to set a master preference, otherwise Pacemaker
+      # won't ever promote us in the absence of any explicit
+      # preference set by the administrator. We choose a low
+      # greater-than-zero preference.
+      $CRM_MASTER -v 1
+      
+   fi
+   
+   # Initial monitor action
+   if [ -n "$OCF_RESKEY_test_table" -a -n "$OCF_RESKEY_test_user" \
+        -a -n "$OCF_RESKEY_test_passwd" ]; then
+      OCF_CHECK_LEVEL=10
+   fi
+   mysql_monitor
+   rc=$?
+   if [ $rc != $OCF_SUCCESS -a $rc != $OCF_RUNNING_MASTER ]; then
+      ocf_log err "Failed initial monitor action"
+      return $rc
+   fi
+   
+   ocf_log info "MySQL started"
+   return $OCF_SUCCESS
+}
+
+# low level MySQL start
+mysql_start_low() {
+   touch $OCF_RESKEY_log
+   chown $OCF_RESKEY_user:$OCF_RESKEY_group $OCF_RESKEY_log
+   chmod 0640 $OCF_RESKEY_log
+   [ -x /sbin/restorecon ] && /sbin/restorecon $OCF_RESKEY_log
+   
+   if ocf_is_true "$OCF_RESKEY_enable_creation" && [ ! -d $OCF_RESKEY_datadir/mysql ] ; then
+      ocf_log info "Initializing MySQL database: "
+      $MYSQL_BINDIR/mysql_install_db --datadir=$OCF_RESKEY_datadir
+      rc=$?
+      if [ $rc -ne 0 ] ; then
+         ocf_log err "Initialization failed: $rc";
+         exit $OCF_ERR_GENERIC
+      fi
+      chown -R $OCF_RESKEY_user:$OCF_RESKEY_group $OCF_RESKEY_datadir
+   fi
+   
+   pid_dir=`dirname $OCF_RESKEY_pid`
+   if [ ! -d $pid_dir ] ; then
+      ocf_log info "Creating PID dir: $pid_dir"
+      mkdir -p $pid_dir
+      chown $OCF_RESKEY_user:$OCF_RESKEY_group $pid_dir
+   fi
+   
+   socket_dir=`dirname $OCF_RESKEY_socket`
+   if [ ! -d $socket_dir ] ; then
+      ocf_log info "Creating socket dir: $socket_dir"
+      mkdir -p $socket_dir
+      chown $OCF_RESKEY_user:$OCF_RESKEY_group $socket_dir
+   fi
+   
+   # Regardless of whether we just created the directory or it
+   # already existed, check whether it is writable by the configured
+   # user
+   for dir in $pid_dir $socket_dir; do
+      if ! su -s /bin/sh - $OCF_RESKEY_user -c "test -w $dir"; then
+         ocf_log err "Directory $dir is not writable by $OCF_RESKEY_user"
+         exit $OCF_ERR_PERM;
+      fi
+   done
+   
+   # Uncomment to perform permission clensing
+   # - not convinced this should be enabled by default
+   #
+   #chmod 0755 $OCF_RESKEY_datadir
+   #chown -R $OCF_RESKEY_user $OCF_RESKEY_datadir
+   #chgrp -R $OCF_RESKEY_group $OCF_RESKEY_datadir
+   mysql_extra_params=
+   if ocf_is_ms; then
+      mysql_extra_params="$mysql_extra_params --skip-slave-start --read-only"
+   fi
+   
+   ${OCF_RESKEY_binary} --defaults-file=$OCF_RESKEY_config \
+   --enforce_gtid_consistency=1 \
+   --gtid_mode=on \
+   --pid-file=$OCF_RESKEY_pid \
+   --socket=$OCF_RESKEY_socket \
+   --datadir=$OCF_RESKEY_datadir \
+   --user=$OCF_RESKEY_user $OCF_RESKEY_additional_parameters \
+   $mysql_extra_params >/dev/null 2>&1 &
+   rc=$?
+   
+   # we also get the process id from $! because the PID file is only 
+   # created by mysql as soon as mysql is fully up and running
+   # for example, when recovery is busy, the pid file does not exist yet
+   # this part already creates the PID file as the mysql user
+   # so that other PRM checks know
+   # When recovery happens, the PID file does not exist yet.
+   process_pid=$!
+   # mysql_status expects that if the pid is there and it's running
+   # that mysql is completely active
+   #su $OCF_RESKEY_user -c "echo '$process_pid' > $OCF_RESKEY_pid"
+   echo "$process_pid" > ${OCF_RESKEY_pid}.starting
+
+   if [ $rc != 0 ]; then
+      ocf_log err "MySQL start command failed: $rc"
+      return $rc
+   fi
+   
+   # Spin waiting for the server to come up.
+   # Let the CRM/LRM time us out if required.
+   start_wait=1
+   while [ $start_wait = 1 ]; do
+      mysql_status info
+      rc=$?
+      if [ $rc = $OCF_SUCCESS ]; then
+         start_wait=0
+         
+      elif [ $rc != $OCF_NOT_RUNNING ]; then
+         ocf_log info "MySQL start failed: $rc"
+         return $rc
+      fi
+
+      # if mysql died in the meantime, we shall not wait
+      # until the timeout is reached.
+      kill -s 0 $process_pid > /dev/null
+      mysqld_pid_status=$?
+
+      if [ "$mysqld_pid_status" -ne "0" ]; then
+         ocf_log err "MySQL daemon died during start, giving up."
+         return $OCF_ERR_GENERIC
+      fi
+
+      sleep 2
+   done
+   
+   return $OCF_SUCCESS
+}
+
+mysql_stop() {
+   
+   if ocf_is_ms; then
+      # clear preference for becoming master
+      $CRM_MASTER -D
+      
+      # Remove VIP capability
+      set_reader_attr 0
+   fi
+   
+   # we rely only on ${OCF_RESKEY_pid}.starting
+   # as this certainly contains the file we need with the PID
+   if [ ! -f ${OCF_RESKEY_pid}.starting ]; then
+      ocf_log info "MySQL is not running"
+      return $OCF_SUCCESS
+   fi
+   
+   pid=`cat ${OCF_RESKEY_pid}.starting 2> /dev/null`
+   /bin/kill $pid > /dev/null
+   rc=$?
+   if [ $rc != 0 ]; then
+      ocf_log err "MySQL couldn't be stopped"
+      return $OCF_ERR_GENERIC
+   fi
+   
+   if [ "$OCF_RESKEY_async_stop" -eq "1" ]; then
+      #Ok, MySQL is stopping and the async_stop option is set, just put the
+      #pid and a timestamp in the witness file and return
+   
+      echo "pid:$pid" > $ASYNC_STOP_WITNESS_FILE
+      echo "ts:`date +%s`" >> $ASYNC_STOP_WITNESS_FILE
+      
+      #Don't know yet why the ts, just seems useful for debugging for now
+      ocf_log info "MySQL async stopped";
+      return $OCF_SUCCESS
+   fi
+
+   # stop waiting
+   shutdown_timeout=15
+   if [ -n "$OCF_RESKEY_CRM_meta_timeout" ]; then
+      shutdown_timeout=$((($OCF_RESKEY_CRM_meta_timeout/1000)-5))
+   fi
+   
+   #Normally, pacemaker handles timeout but here we want to be able to do
+   #a SIGKILL (-9) before the timeout occurs.
+   count=0
+   while [ $count -lt $shutdown_timeout ]
+   do
+      kill -s 0 $pid
+      rc=$?
+      if [ $rc -ne 0 ]; then
+         break
+      fi
+      count=`expr $count + 1`
+      sleep 1
+      ocf_log debug "MySQL still hasn't stopped yet. Waiting..."
+   done
+   
+   kill -s 0 $pid
+   if [ $? -eq 0 ]; then
+      ocf_log info "MySQL failed to stop after ${shutdown_timeout}s using SIGTERM. Trying SIGKILL..."
+      /bin/kill -KILL $pid > /dev/null
+   fi
+
+   rm ${OCF_RESKEY_pid}.starting
+   ocf_log info "MySQL stopped";
+   rm -f /var/lock/subsys/mysqld
+   rm -f $OCF_RESKEY_socket
+   return $OCF_SUCCESS
+}
+
+mysql_promote() {
+   local master_info
+   
+   if ( ! mysql_status err ); then
+      return $OCF_NOT_RUNNING
+   fi
+   
+   unset_master
+   
+   # Set Master Info in CIB, cluster level attribute
+   update_data_master_status
+   master_info="$(get_local_ip)|$(get_master_status)"
+   ${CRM_ATTR_REPL_INFO} -v "$master_info"
+   rm -f $tmpfile
+   
+   set_read_only off || return $OCF_ERR_GENERIC
+   
+   # Existing master gets a higher-than-default master preference, so
+   # the cluster manager does not shuffle the master role around
+   # unnecessarily
+   $CRM_MASTER -v $((${OCF_RESKEY_max_slave_lag}+1000))
+   
+   # A master can accept reads
+   set_reader_attr 1
+   
+   if [ "${#OCF_RESKEY_post_promote_script}" -gt "0" -a \
+        -x "${OCF_RESKEY_post_promote_script}" -a \
+        ! -L "${OCF_RESKEY_post_promote_script}" ]; then
+      ${OCF_RESKEY_post_promote_script}
+   fi
+   
+   return $OCF_SUCCESS
+}
+
+mysql_demote() {
+   if ! mysql_status err; then
+      $CRM_MASTER -v 0
+      exit $OCF_SUCCESS
+   else
+      # Return master preference to default, so the cluster manager gets
+      # a chance to select a new master
+      $CRM_MASTER -v 1
+      exit $OCF_SUCCESS
+   fi
+}
+
+mysql_notify() {
+   # If not configured as a Stateful resource, we make no sense of
+   # notifications.
+   if ! ocf_is_ms; then
+      ocf_log info "This agent makes no use of notifications unless running in master/slave mode."
+      return $OCF_SUCCESS
+   fi
+   
+   local type_op
+   type_op="${OCF_RESKEY_CRM_meta_notify_type}-${OCF_RESKEY_CRM_meta_notify_operation}"
+   
+   ocf_log debug "Received $type_op notification."
+   
+   case "$type_op" in
+      'pre-promote')
+         # Master-score is normally calculated from slave-lag but it is better to use
+         # binlog offset position to pick the most up to date slave
+         master_status_attr=`$CRM_ATTR_REPL_STATUS --query  -q`
+         
+         if [ $? -eq 0 ]; then
+            # There's a master status entry although we don't know if it is
+            # a valid one
+            master_uuid=`echo $master_status_attr | cut -d: -f1`
+            last_gtid=`echo $master_status_attr | cut -d: -f2`
+                        
+            get_slave_info
+            if [ $? -eq "$OCF_SUCCESS" ]; then
+               # We'll be here only if the master crashed. In the event of
+               # a graceful demote, a post-demote notification event would have occurred.
+               # The post-demote include an unset-master that
+               # resets the slave after the completion of the IO and SQL
+               # threads.  The post-demote doesn't run if the master host
+               # crashed.
+               
+               # First, we unset the master to let the SQL thread drain the
+               # remaining relay log
+               unset_master
+               
+               # Next we gather the last executed gtid from the master
+               slave_status_file="${HA_RSCTMP}/slave_nofiy.${OCF_RESOURCE_INSTANCE}"
+               
+               mysql_run -Q -sw -O $MYSQL $MYSQL_OPTIONS_REPL -BN -e "select variable_name,replace(variable_value,'\n','') as variable_value from information_schema.global_variables where variable_name in ('gtid_executed')" > $slave_status_file               
+               
+               executed_gtid=`cat $slave_status_file | sed "s/.*$master_uuid:[0-9]*-\([0-9]*\).*/\1/"`
+               
+               rm -f $slave_status_file
+               
+               # Let's establish the master score based on the following
+               # rule.
+               # score = executed_gtid - last_gtid
+               #               
+               # Since the master publishes its status only once per few
+               # seconds, executed_gtid - last_gtid is likely positive.
+               # We'll cap all values to int signed range et target
+               # 1B as the value if a slave is fully in sync with the master
+               
+               master_score=$((1000000000+$executed_gtid-$last_gtid))
+               
+               # now, the caps, the upper cap is unlikely
+               if [ $master_score -gt 2147483647 ]; then
+                  master_score=2147483647
+               fi
+               
+               # the lower cap could happened if a slave lags behind by
+               # more then 30GB of binlog. In that case... do we really care
+               # if we floor the value
+               
+               if [ $master_score -lt -2147483647 ]; then
+                  master_score=-2147483647
+               fi
+               
+               $CRM_MASTER -v $master_score
+               
+            fi
+         fi
+         
+      ;;
+      'post-promote')
+         # The master has completed its promotion. Now is a good
+         # time to check whether our replication slave is working
+         # correctly.
+         
+         # Is the notification for our set
+         notify_resource=`echo $OCF_RESKEY_CRM_meta_notify_promote_resource|cut -d: -f1`
+         my_resource=`echo $OCF_RESOURCE_INSTANCE|cut -d: -f1`
+         if [ $notify_resource != ${my_resource} ]; then
+            ocf_log debug "Notification is not for us"
+            return $OCF_SUCCESS
+         fi
+         
+         master_host=`echo $OCF_RESKEY_CRM_meta_notify_promote_uname|tr -d " "`
+         if [ "$master_host" = ${HOSTNAME} ]; then
+            ocf_log info "This will be the new master, ignoring post-promote notification."
+         else
+            ocf_log info "Resetting replication"
+            unset_master
+            if [ $? -ne 0 ]; then
+               return $OCF_ERR_GENERIC
+            fi
+            
+            ocf_log info "Changing MySQL configuration to replicate from $master_host"
+            set_master
+            if [ $? -ne 0 ]; then
+               return $OCF_ERR_GENERIC
+            fi
+            
+            start_slave
+            if [ $? -ne 0 ]; then
+               ocf_log err "Failed to start slave"
+               return $OCF_ERR_GENERIC
+            fi
+         fi
+         return $OCF_SUCCESS
+      ;;
+      'pre-demote')
+         # Is the notification for our set
+         notify_resource=`echo $OCF_RESKEY_CRM_meta_notify_demote_resource|cut -d: -f1`
+         my_resource=`echo $OCF_RESOURCE_INSTANCE|cut -d: -f1`
+         if [ $notify_resource != ${my_resource} ]; then
+            ocf_log debug "Notification is not for us"
+            return $OCF_SUCCESS
+         fi
+         
+         demote_host=`echo $OCF_RESKEY_CRM_meta_notify_demote_uname|tr -d " "`
+         if [ $demote_host = ${HOSTNAME} ]; then
+            ocf_log info "post-demote notification for $demote_host"
+            set_read_only on
+            if [ $? -ne 0 ]; then
+               ocf_log err "Failed to set read-only";
+               return $OCF_ERR_GENERIC;
+            fi
+            
+            # Must kill all existing user threads because they are still Read/write
+            # in order for the slaves to complete the read of binlogs
+            local tmpfile
+            tmpfile=`mktemp ${HA_RSCTMP}/threads.${OCF_RESOURCE_INSTANCE}.XXXXXX`
+            mysql_run -Q -sw -O $MYSQL $MYSQL_OPTIONS_REPL \
+            -e "SHOW PROCESSLIST" > $tmpfile
+            
+            for thread in `awk '$0 !~ /Binlog Dump|system user|event_scheduler|SHOW PROCESSLIST/ && $0 ~ /^[0-9]/ {print $1}' $tmpfile`
+            do
+               mysql_run -Q -sw $MYSQL $MYSQL_OPTIONS_REPL \
+               -e "KILL ${thread}"
+            done
+            rm -f $tmpfile
+         else
+            ocf_log info "Ignoring post-demote notification execpt for my own demotion."
+         fi
+         return $OCF_SUCCESS
+      ;;
+      'post-demote')
+         # Is the notification for our set
+         notify_resource=`echo $OCF_RESKEY_CRM_meta_notify_demote_resource|cut -d: -f1`
+         my_resource=`echo $OCF_RESOURCE_INSTANCE|cut -d: -f1`
+         if [ $notify_resource != ${my_resource} ]; then
+            ocf_log debug "Notification is not for us"
+            return $OCF_SUCCESS
+         fi
+         
+         demote_host=`echo $OCF_RESKEY_CRM_meta_notify_demote_uname|tr -d " "`
+         if [ $demote_host = ${HOSTNAME} ]; then
+            ocf_log info "Ignoring post-demote notification for my own demotion."
+            return $OCF_SUCCESS
+         fi
+         ocf_log info "post-demote notification for $demote_host."
+         # The former master has just been gracefully demoted.
+         unset_master
+      ;;
+      *)
+         return $OCF_SUCCESS
+      ;;
+   esac
+}
+
+#
+# mysql_run: Run a mysql command, log its output and return the proper error code.
+# Usage:   mysql_run [-Q] [-info|-warn|-err] [-O] [-sw] <command>
+#       -Q: don't log the output of the command if it succeeds
+#       -info|-warn|-err: log the output of the command at given
+#               severity if it fails (defaults to err)
+#       -O: echo the output of the command
+#       -sw: Suppress 5.6 client warning when password is used on the command line
+# Adapted from ocf_run.
+#
+mysql_run() {
+   local rc
+   local output outputfile
+   local verbose=1
+   local returnoutput
+   local loglevel=err
+   local suppress_56_password_warning
+   local var
+   
+   for var in 1 2 3 4
+   do
+      case "$1" in
+         "-Q")
+            verbose=""
+         shift 1;;
+         "-info"|"-warn"|"-err")
+            loglevel=`echo $1 | sed -e s/-//g`
+         shift 1;;
+         "-O")
+            returnoutput=1
+         shift 1;;
+         "-sw")
+            suppress_56_password_warning=1
+         shift 1;;
+         
+         *)
+         ;;
+      esac
+   done
+   
+   outputfile=`mktemp ${HA_RSCTMP}/mysql_run.${OCF_RESOURCE_INSTANCE}.XXXXXX`
+   error=`"$@" 2>&1 1>$outputfile`
+   rc=$?
+   if [ "$suppress_56_password_warning" -eq 1 ]; then
+      error=`echo "$error" | egrep -v '^Warning: Using a password on the command line'`
+   fi
+   output=`cat $outputfile`
+   rm -f $outputfile
+   
+   if [ $rc -eq 0 ]; then
+      if [ "$verbose" -a ! -z "$output" ]; then
+         ocf_log info "$output"
+      fi
+      
+      if [ "$returnoutput" -a ! -z "$output" ]; then
+         echo "$output"
+      fi
+      
+      MYSQL_LAST_ERR=$OCF_SUCCESS
+      return $OCF_SUCCESS
+   else
+      if [ ! -z "$error" ]; then
+         ocf_log $loglevel "$error"
+         regex='^ERROR ([[:digit:]]{4}).*'
+         if [[ $error =~ $regex ]]; then
+            mysql_code=${BASH_REMATCH[1]}
+            if [ -n "$mysql_code" ]; then
+               MYSQL_LAST_ERR=$mysql_code
+               return $rc
+            fi
+         fi
+      else
+         ocf_log $loglevel "command failed: $*"
+      fi
+      # No output to parse so return the standard exit code.
+      MYSQL_LAST_ERR=$rc
+      return $rc
+   fi
+}
+
+#######################################################################
+
+
+##########################################################################
+# If DEBUG_LOG is set, make this resource agent easy to debug: set up the
+# debug log and direct all output to it.  Otherwise, redirect to /dev/null.
+# The log directory must be a directory owned by root, with permissions 0700,
+# and the log must be writable and not a symlink.
+##########################################################################
+DEBUG_LOG="/tmp/mysql.ocf.ra.debug/log"
+if [ "${DEBUG_LOG}" -a -w "${DEBUG_LOG}" -a ! -L "${DEBUG_LOG}" ]; then
+   DEBUG_LOG_DIR="${DEBUG_LOG%/*}"
+   if [ -d "${DEBUG_LOG_DIR}" ]; then
+      exec 9>>"$DEBUG_LOG"
+      exec 2>&9
+      date >&9
+      echo "$*" >&9
+      env | grep OCF_ | sort >&9
+      set -x
+   else
+      exec 9>/dev/null
+   fi
+fi
+
+case "$1" in
+   meta-data)    meta_data
+   exit $OCF_SUCCESS;;
+   usage|help)   usage
+   exit $OCF_SUCCESS;;
+esac
+
+if [ "$#" -lt "1" ]; then
+   usage
+   exit $OCF_SUCCESS
+fi
+
+mysql_validate
+rc=$?
+LSB_STATUS_STOPPED=3
+if [ $rc -ne 0 ]; then
+   case "$1" in
+      stop) exit $OCF_SUCCESS;;
+      monitor) exit $OCF_NOT_RUNNING;;
+      status) exit $LSB_STATUS_STOPPED;;
+      *) exit $rc;;
+   esac
+fi
+
+#Global info missing from OCF_RESKEY
+resources=`$CRM_RES --list`
+# now we need the master-slave clone set name, need to walk around limitations
+# of older pacemaker
+if [[ "$OCF_RESKEY_crm_feature_set" > "3.0.1" ]]; then
+   glb_master_resource=`echo "$resources" | grep $INSTANCE_ATTR_NAME | awk '{print $3}' | head -n 1`
+else
+   # older versions of Pacemaker don't write the primitive name in the resources list
+   for msr in `echo "$resources" | grep 'Master/Slave' | awk '{print $3}'`; do
+      isThere=`$CRM_RES -q -r $msr | grep primitive | grep -c $INSTANCE_ATTR_NAME`
+      if [ "$isThere" -gt "0" ]; then
+         glb_master_resource=$msr
+      fi
+   done
+fi
+
+# We check if there is a location constraint against this node
+# where $OCF_RESOURCE_INSTANCE should not be running here i.e.
+# -INFINITY score, if so we ignore monitor call for this node
+contrnt=$(cibadmin --query --obj_type constraints\
+   |awk "/<rsc_location.*\ rsc=\"($OCF_RESOURCE_INSTANCE|$glb_master_resource)\"/,/<\/rsc_location>/"\
+   |awk '/score="-INFINITY"/,/<\/rule/'\
+   |egrep "expression attribute=\"#uname\".*operation=\"eq\".*value=\"$HOSTNAME\"" 2> /dev/null)
+
+if [ "$?" -eq "0" ]; then
+   exit $OCF_SUCCESS
+fi
+
+is_master_side
+glb_master_side=$?
+if [ "${#OCF_RESKEY_geo_remote_IP}" -gt "0" -a $glb_master_side -ne 0 ]; then
+   # If geo_remote_IP is defined and our side is not master, let's query the remote side
+   # the variable content will be like: pacemaker-1-1|binlog.000156|107 1
+   # or if using GTID: pacemaker-1-1|046d3836-3402-11e4-9b53-0800279b82ba:56743 1
+   # The commands here are boolean tested so if any of them fails we will
+   # not get a MASTER_OK which indicates we got a useful value at least
+   ssh_cmd="$SSH $OCF_RESKEY_geo_remote_IP -l $OCF_RESKEY_geo_remote_user $OCF_RESKEY_geo_remote_opts"
+   ssh_query="$CRM_ATTR_REPL_INFO --query  -q 2> /dev/null"
+   ssh_query="$ssh_query && $CRM_RES --list | grep -A2 $glb_master_resource | egrep -c 'Master[^\/]'"
+   ssh_query="$ssh_query && echo 'MASTER_OK' || echo 'MASTER_NOT_FOUND'"
+   glb_remote_info=`$ssh_cmd "$ssh_query" | tr '\n' ' '`
+   echo "$glb_remote_info" | grep MASTER_OK > /dev/null 2>&1
+   if [ "$?" -ne "0" ]; then
+      glb_master_exists=0
+   else
+      glb_master_exists=`echo $glb_remote_info | awk '{ print $(NF-1) }'`
+      if [[ -z "$glb_master_exists" ]]; then
+         glb_master_exists=0
+      fi
+   fi
+else
+   glb_master_exists=`echo "$resources" | grep -A2 $glb_master_resource | egrep -c 'Master[^\/]'`
+fi
+
+if [ "$glb_master_exists" -eq "1" ]; then
+   if [ "${#glb_remote_info}" -gt "0" ]; then
+      glb_cib_master=`echo $glb_remote_info | awk '{ print $1 }' | cut -d'|' -f1`
+   else
+      glb_cib_master=`$CRM_ATTR_REPL_INFO --query  -q | cut -d'|' -f1`
+   fi
+fi
+
+# What kind of method was invoked?
+case "$1" in
+   start)    mysql_start;;
+   stop)     mysql_stop;;
+   status)   mysql_status err;;
+   monitor)  mysql_monitor;;
+   promote)  mysql_promote;;
+   demote)   mysql_demote;;
+   notify)   mysql_notify;;
+   validate-all) exit $OCF_SUCCESS;;
+   
+   *)     usage
+   exit $OCF_ERR_UNIMPLEMENTED;;
+esac
+
