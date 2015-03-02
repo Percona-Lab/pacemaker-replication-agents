@@ -2183,7 +2183,7 @@ if [ "${#OCF_RESKEY_geo_remote_IP}" -gt "0" -a $glb_master_side -ne 0 ]; then
       glb_master_exists=0
    fi
 else
-   glb_master_exists=`echo "$resources" | grep -A2 $glb_master_resource | egrep -c 'Master[^\/]'`
+   glb_master_exists=`echo "$resources" | egrep -A2 "\[$glb_master_resource\]" | egrep -c 'Master[^\/]'`
 fi
 
 if [ "$glb_master_exists" -eq "1" ]; then
