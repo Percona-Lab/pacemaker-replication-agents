@@ -38,10 +38,10 @@ create table test_prm_slave_complete (
 /*!50100 set global binlog_format='STATEMENT' */;
 insert into test_prm_slave_complete (data,data1) select '${master}', sleep(15);
 EOF
-    ) | ${uname_ssh[$master]} $MYSQL 
+    ) | ${uname_ssh[$master]} "sudo $MYSQL"
 
     # Now, the slave are stuck applying the insert, put the master in standby
-    ${uname_ssh[$master]} crm node standby $master
+    ${uname_ssh[$master]} "sudo crm node standby $master"
 
     # wait for the sleep to complete and promotion
     sleep 20
@@ -49,29 +49,33 @@ EOF
     newmaster=`check_master`
     # Sanity check
     if [ "$master" = "$newmaster" ]; then
-        echo "Still the same master"
-        print_result "$0" $PRM_FAIL
+	local_cleanup
+        print_result "$0 Still the same master" $PRM_FAIL
     fi
 
     count_result=`(cat <<EOF
 use test;
 select count(*) from test_prm_slave_complete where data = '$master';
 EOF
-    ) | ${uname_ssh[$newmaster]} $MYSQL -N`
+    ) | ${uname_ssh[$newmaster]} "sudo $MYSQL -N"`
 
+    local_cleanup
+    if [ "$count_result" -ne 1 ]; then
+        print_result "$0" $PRM_FAIL
+    else 
+        print_result "$0" $PRM_SUCCESS
+    fi
+
+}
+
+local_cleanup() {
     #now, a bit of cleanup before ending
     (cat <<EOF
 create database if not exists test;
 use test;
 drop table if exists test_prm_slave_complete; 
 EOF
-    ) | ${uname_ssh[$newmaster]} $MYSQL
-
-    if [ "$count_result" -ne 1 ]; then
-        print_result "$0" $PRM_FAIL
-    else 
-        print_result "$0" $PRM_SUCCESS
-    fi
+    ) | ${uname_ssh[$newmaster]} "sudo $MYSQL"
 
 }
 

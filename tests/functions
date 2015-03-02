@@ -4,14 +4,15 @@
 
 runcmd_all() {
 
-    runcmd $SSH1 $@  1> /dev/null
-    runcmd $SSH2 $@  1> /dev/null
-    runcmd $SSH3 $@  1> /dev/null
+    runcmd "$SSH1" "$@"  #1> /dev/null
+    runcmd "$SSH2" "$@"  #1> /dev/null
+    runcmd "$SSH3" "$@"  #1> /dev/null
 }
 
 runcmd() {
-
-    $@
+    p1="$1"
+    shift
+    $p1 "sudo $@"
     rc=$?
     if [ $rc -ne 0 ]; then
         echo "$@ failed with retrun code $rc"
@@ -24,11 +25,11 @@ runcmd() {
 build_assoc_uname_ssh() {
     local uname
     
-    uname=`runcmd $SSH1 uname -n`
+    uname=`runcmd "$SSH1" "uname -n"`
     uname_ssh[$uname]=$SSH1
-    uname=`runcmd $SSH2 uname -n`
+    uname=`runcmd "$SSH2" "uname -n"`
     uname_ssh[$uname]=$SSH2
-    uname=`runcmd $SSH3 uname -n`
+    uname=`runcmd "$SSH3" "uname -n"`
     uname_ssh[$uname]=$SSH3
     
 }
@@ -56,7 +57,7 @@ parse_slave_info() {
 get_master_IP() {
    local IP
    # can't use runcmd, we need to trap the return value
-   IP=`${uname_ssh[$1]} crm_attribute -l forever -n ${MYSQL_CRM_PRIMITIVE}_mysql_master_IP -q -G`
+   IP=`${uname_ssh[$1]} "sudo crm_attribute -l forever -n ${MYSQL_CRM_PRIMITIVE}_mysql_master_IP -q -G"`
    if [ ! $? -eq 0 ]; then
       $1
    else
@@ -77,15 +78,15 @@ online_all() {
 }
 
 crm_master() {
-    runcmd $SSH1 "crm_mon -1 | grep 'Masters:' | sed 's/\s*Masters:\s\[\s\(.*\)\s\]/\1/'"
+    runcmd "$SSH1" "crm_mon -1 | grep 'Masters:' | sed 's/\s*Masters:\s\[\s\(.*\)\s\]/\1/'"
 }
 
 crm_slaves() {
-    runcmd $SSH1 "crm_mon -1 | grep 'Slaves:' | sed 's/\s*Slaves:\s\[\s\(.*\)\s\]/\1/'"
+    runcmd "$SSH1" "crm_mon -1 | grep 'Slaves:' | sed 's/\s*Slaves:\s\[\s\(.*\)\s\]/\1/'"
 }
 
 crm_nodes() {
-    runcmd $SSH1 "crm_mon -1 | grep 'Online:' | sed 's/\s*Online:\s\[\s\(.*\)\s\]/\1/'"
+    runcmd "$SSH1" "crm_mon -1 | grep 'Online:' | sed 's/\s*Online:\s\[\s\(.*\)\s\]/\1/'"
 }
 
 check_master() {
@@ -164,8 +165,8 @@ check_slaves() {
             fi
             
             tmpfile=`mktemp /tmp/prm_test.XXXXXX`
-            cmd="${uname_ssh[$slave]} $MYSQL -E -e ' show slave status '"
-            runcmd $cmd > $tmpfile
+            cmd="${uname_ssh[$slave]} \"$MYSQL -E -e ' show slave status '\""
+            ( runcmd "${uname_ssh[$slave]}" "$MYSQL -E -e ' show slave status '" ) > $tmpfile
             slave_master=`parse_slave_info Master_Host $tmpfile`
             slave_sql=`parse_slave_info Slave_SQL_Running $tmpfile`
             slave_io=`parse_slave_info Slave_IO_Running $tmpfile`
@@ -235,8 +236,7 @@ check_VIPs() {
 
     #writer vip on master
     tmpfile=`mktemp /tmp/prm_test.XXXXXX`
-    cmd="$SSH1 crm_mon -1"
-    runcmd $cmd > $tmpfile
+    ( runcmd "$SSH1" "crm_mon -1" ) > $tmpfile
 
     writerok=`cat $tmpfile | grep $WRITER_VIP_PRIMITIVE | grep -c $1`
 
@@ -279,5 +279,48 @@ check_VIPs() {
     else
         return $PRM_FAIL
     fi
+
+}
+
+allsetup() {
+# restart corosync
+	runcmd_all "/etc/init.d/corosync start" 1> /dev/null 2> /dev/null
+	sleep 10
+
+	# start pacemaker
+	runcmd_all "/etc/init.d/pacemaker start" 1> /dev/null
+	sleep 20
+
+	runcmd "$SSH1" 'crm_attribute --attr-name no-quorum-policy --attr-value ignore'
+	runcmd "$SSH1" 'crm_attribute --attr-name stonith-enabled --attr-value false'
+
+	#load configuration
+	cat base_config.crm | runcmd "$SSH1" 'cat - > /tmp/config.crm'
+	runcmd "$SSH1" 'crm configure load update /tmp/config.crm'
+
+	online_all
+
+	sleep 10
+}
+
+allcleanup() {
+
+    # stop pacemaker
+    runcmd_all 'sudo ps fax | grep /usr/lib/pacemaker | grep -v grep | awk '\''{ print $1 }'\'' | xargs sudo kill -9 '
+    sleep 1
+
+    # stop pacemaker
+    runcmd_all 'pkill -9 corosync' 1> /dev/null
+    sleep 1
+
+    # stop pacemaker
+    runcmd_all 'pkill mysqld' 1> /dev/null
+    sleep 1
+
+    runcmd_all 'rm -f /var/lib/pacemaker/cib/*' 1> /dev/null
+    runcmd_all 'rm -f /var/lib/corosync/*' 1> /dev/null
+
+    runcmd_all 'iptables -F INPUT' 1> /dev/null
+    runcmd_all 'iptables -F OUTPUT' 1> /dev/null
 
 }

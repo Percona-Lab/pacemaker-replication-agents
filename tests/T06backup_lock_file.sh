@@ -32,13 +32,13 @@ runtest() {
     declare -a slaves=( `crm_slaves` )
 
     # On that slave we set a lock file for 15s
-    ${uname_ssh[${slave[0]}]} 'flock -xn /var/lock/innobackupex sleep 15' &
+    ${uname_ssh[${slave[0]}]} 'sudo flock -xn /var/lock/innobackupex sleep 15' &
 
     # stop replication
     (cat <<EOF
 stop slave;
 EOF
-    ) | ${uname_ssh[${slave[0]}]} $MYSQL
+    ) | ${uname_ssh[${slave[0]}]} "sudo $MYSQL"
 
     # wait for a monitor op
     sleep 5

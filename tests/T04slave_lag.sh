@@ -17,7 +17,7 @@ testdir=`dirname $0`
 #Called by other tests to get PRM up
 setup() {
 
-./T01gracefulstart.sh setup
+allsetup
 
 } 
 
@@ -55,7 +55,7 @@ insert into test_prm_slave_lag (data) select sleep(${sleep_time});
 drop table test_prm_slave_lag;
 
 EOF
-    ) | ${uname_ssh[$master]} $MYSQL 
+    ) | ${uname_ssh[$master]} "sudo $MYSQL"
 
     # sleep max_slave_lag + 5 (assuming slave monitor interval is 2s
     sleep $max_slave_lag 
@@ -63,10 +63,9 @@ EOF
 
     # Check rvip running on master (should all be on master)
     check_slaves $master
-    check_VIPs -u $master 
+    check_VIPs -u $master > /dev/null
     if [ "$?" -eq 0 ]; then
-        echo "VIPs are not all on the master (may be normal if using RBR)"
-        print_result "$0" $PRM_FAIL
+        print_result "$0 VIPs are not all on the master" $PRM_FAIL
     fi
 
     # sleep max_slave_lag + 5
@@ -76,9 +75,9 @@ EOF
     # Check rvip running on master (should not all be on master)
     check_slaves $master
     check_VIPs -u $master
-    if [ "$?" -gt 0 ]; then
-        echo "VIPs have not been well distributed after the slave lag"
-        print_result "$0" $PRM_FAIL
+    rc=$?
+    if [ "$rc" -gt 0 ]; then
+        print_result "$0 VIPs have not been well distributed after the slave lag" $PRM_FAIL
     else
         print_result "$0" $PRM_SUCCESS
     fi
@@ -88,8 +87,7 @@ EOF
 #Called by other test to get PRM down
 cleanup() {
 
-./T01gracefulstart.sh cleanup    
-
+allcleanup
 }
 
 

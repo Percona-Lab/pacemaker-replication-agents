@@ -1327,8 +1327,7 @@ mysql_monitor() {
             fi
             
             # Is this following a recent master crash?
-            master_crashed_ts=`$CRM_ATTR_MASTER_CRASHED_TS --query`
-            
+            master_crashed_ts=`$CRM_ATTR_MASTER_CRASHED_TS --query 2>/dev/null`
             if [ ! -z $master_crashed_ts ]; then
                if [ `date +%s` -gt "$((${master_crashed_ts}+3600))" ]; then
                   #Let's cleanup the cib
@@ -1400,12 +1399,31 @@ mysql_start() {
       return $OCF_SUCCESS
    fi
    
+   
    # Is MySQL still stopping, OCF_STOPPING is a custom error code
    if [ "$current_status" = "$OCF_STOPPING" ]; then
-      ocf_log err "MySQL asked to start while still stopping"
-      # TODO, wait for stop (or timeout). For now just a sleep
-      sleep 5
-      return $OCF_ERR_GENERIC
+   
+      # Waiting 5s less than the op timeout
+      shutdown_timeout=$((($OCF_RESKEY_CRM_meta_timeout/1000)-5))
+   
+      count=0
+      while [ $count -lt $shutdown_timeout ]
+      do
+         sleep 1
+         mysql_status info 1
+         if [ "$?" != "$OCF_STOPPING" ]; then
+            break
+         fi
+         count=$(($count+1))
+         ocf_log debug "MySQL hasn't stopped yet (async_stop). Waiting before trying to start."
+      done
+      
+      # Has MySQL stopped in time 
+      if [ $count -eq $shutdown_timeout ]; then
+         # No, the restart was too soon
+         ocf_log err "MySQL asked to start while still stopping"
+         return $OCF_ERR_GENERIC
+      fi
    fi
    
    mysql_start_low

@@ -14,7 +14,7 @@ testdir=`dirname $0`
 #Called by other tests to get PRM up
 setup() {
 
-./T01gracefulstart.sh setup
+    allsetup
 
 } 
 
@@ -24,7 +24,7 @@ runtest() {
     master1=`check_master`
 
     #Demote/promote
-    runcmd $SSH1 "crm node standby $master1"
+    runcmd "$SSH1" "crm node standby $master1"
     sleep 10
 
     master2=`check_master`
@@ -45,7 +45,7 @@ runtest() {
     rc=$?    
     
     # put the node back online
-    runcmd $SSH1 "crm node online $master1"
+    runcmd "$SSH1" "crm node online $master1"
     
     if [ "$rc" -ne "$PRM_SUCCESS" ]; then
         print_result "$0" $PRM_FAIL
@@ -58,7 +58,7 @@ runtest() {
 #Called by other test to get PRM down
 cleanup() {
 
-./T01gracefulstart.sh cleanup    
+    allcleanup
 
 }
 

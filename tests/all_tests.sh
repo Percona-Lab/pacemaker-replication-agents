@@ -1,14 +1,20 @@
 #!/bin/bash
 
 . config
+. functions
 
 total=0
 success=0
 failed=0
 
+testdir=`dirname $0`
+
+allcleanup
+allsetup
+
 for t in `ls ./T*.sh`
 do
-	$t setup
+	#$t setup
 	let total=total+1
 	$t runtest
 	if [ "$?" -eq "$PRM_SUCCESS" ]; then
@@ -16,7 +22,7 @@ do
 	else
 		let failed=failed+1
 	fi
-	$t cleanup
+	#$t cleanup
 done
 
 echo "Total: $total, Success: $success, Failed: $failed"

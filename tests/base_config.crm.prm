@@ -1,24 +1,24 @@
-node pacemaker-1 \
-        attributes p_mysql_mysql_master_IP="172.30.212.1"
-node pacemaker-2 \
-        attributes p_mysql_mysql_master_IP="172.30.212.2"
-node pacemaker-3 \
-        attributes p_mysql_mysql_master_IP="172.30.212.3"
+node PRM-1 \
+        attributes p_mysql_mysql_master_IP="10.0.3.66"
+node PRM-2 \
+        attributes p_mysql_mysql_master_IP="10.0.3.65"
+node PRM-3 \
+        attributes p_mysql_mysql_master_IP="10.0.3.68"
 primitive p_mysql ocf:percona:mysql_prm \
-        params config="/etc/mysql/my.cnf" pid="/var/lib/mysql/mysqld.pid" socket="/var/run/mysqld/mysqld.sock" replication_user="repl_user" replication_passwd="WhatAPassword" test_user="test_user" test_passwd="test_pass" max_slave_lag="15" evict_outdated_slaves="false" binary="/usr/sbin/mysqld" async_stop="1" \
+        params config="/etc/mysql/my.cnf" pid="/var/run/mysqld/mysqld.pid" socket="/var/run/mysqld/mysqld.sock" replication_user="repl_user" replication_passwd="WhatAPassword" test_user="test_user" test_passwd="test_pass" max_slave_lag="15" evict_outdated_slaves="false" binary="/usr/sbin/mysqld" async_stop="1" \
         op monitor interval="5s" role="Master" timeout="30s" OCF_CHECK_LEVEL="1" \
         op monitor interval="2s" role="Slave" timeout="30s" OCF_CHECK_LEVEL="1" \
         op start interval="0" timeout="900s" \
         op stop interval="0" timeout="900s"
 primitive reader_vip_1 ocf:heartbeat:IPaddr2 \
-        params ip="172.30.212.101" nic="eth1" \
+        params ip="10.0.3.2" nic="eth0" \
         op monitor interval="10s"
 primitive reader_vip_2 ocf:heartbeat:IPaddr2 \
-        params ip="172.30.212.102" nic="eth1" \
+        params ip="10.0.3.3" nic="eth0" \
         op monitor interval="10s" \
         meta target-role="Started"
 primitive writer_vip ocf:heartbeat:IPaddr2 \
-        params ip="172.30.212.100" nic="eth1" \
+        params ip="10.0.3.4" nic="eth0" \
         op monitor interval="10s"
 ms ms_MySQL p_mysql \
         meta master-max="1" master-node-max="1" clone-max="3" clone-node-max="1" notify="true" globally-unique="false" target-role="Master" is-managed="true"
@@ -26,12 +26,9 @@ location No-reader-vip-1-loc reader_vip_1 \
         rule $id="No-reader-vip-1-rule" -inf: readable eq 0
 location No-reader-vip-2-loc reader_vip_2 \
         rule $id="No-reader-vip-2-rule" -inf: readable eq 0
-colocation reader_vip_1_dislike_reader_vip_2 -200: reader_vip_1 reader_vip_2 writer_vip
+colocation reader_vip_1_dislike_reader_vip_2 -200: reader_vip_2 reader_vip_1 
 colocation reader_vip_1_dislike_writer_vip -200: reader_vip_1 writer_vip
 colocation reader_vip_2_dislike_writer_vip -200: reader_vip_2 writer_vip
 colocation writer_vip_on_master inf: writer_vip ms_MySQL:Master 
 order ms_MySQL_promote_before_vip inf: ms_MySQL:promote writer_vip:start
-property $id="cib-bootstrap-options" \
-        stonith-enabled="false" \
-        no-quorum-policy="ignore" 
 

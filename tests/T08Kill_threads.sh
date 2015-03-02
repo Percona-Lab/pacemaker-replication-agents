@@ -13,7 +13,7 @@ testdir=`dirname $0`
 
 setup() {
 
-./T01gracefulstart.sh setup
+allsetup
 
 } 
 
@@ -39,18 +39,19 @@ insert into test_prm_kill_sessions (data,data1) select '${master}', 1;
 select sleep(15);
 commit;
 EOF
-    ) | ${uname_ssh[$master]} $MYSQL 2> /dev/null &
+    ) | ${uname_ssh[$master]} "sudo $MYSQL" 2> /dev/null &
 
     # Now, there's an uncommited transaction on the master, let's demote and promote
-    ${uname_ssh[$master]} crm resource demote ${MYSQL_CRM_MS}
+    ${uname_ssh[$master]} "sudo crm resource demote ${MYSQL_CRM_MS}"
     sleep 5
-    ${uname_ssh[$master]} crm resource promote ${MYSQL_CRM_MS}
+    ${uname_ssh[$master]} "sudo crm resource promote ${MYSQL_CRM_MS}"
     sleep 5
 
     # The transaction should have been rollbacked 
     newmaster=`check_master`
     # Sanity check
     if [ "$master" = "$newmaster" ]; then
+	local_cleanup
         echo "Still the same master"
         print_result "$0" $PRM_FAIL
     fi
@@ -59,16 +60,9 @@ EOF
 use test;
 select count(*) from test_prm_kill_sessions where data = '$master';
 EOF
-    ) | ${uname_ssh[$newmaster]} $MYSQL -N`
+    ) | ${uname_ssh[$newmaster]} "sudo $MYSQL -N"`
 
-    #now, a bit of cleanup before ending
-    (cat <<EOF
-create database if not exists test;
-use test;
-drop table if exists test_prm_kill_sessions; 
-EOF
-    ) | ${uname_ssh[$newmaster]} $MYSQL
-
+    local_cleanup
     if [ "$count_result" -ne 0 ]; then
         echo "Failed to kill existing connections "
         print_result "$0" $PRM_FAIL
@@ -78,9 +72,20 @@ EOF
 
 }
 
+local_cleanup() {
+
+    #now, a bit of cleanup before ending
+    (cat <<EOF
+create database if not exists test;
+use test;
+drop table if exists test_prm_kill_sessions; 
+EOF
+    ) | ${uname_ssh[$newmaster]} "sudo $MYSQL"
+}
+
 cleanup() {
 
-./T01gracefulstart.sh cleanup    
+allcleanup    
 
 }
 

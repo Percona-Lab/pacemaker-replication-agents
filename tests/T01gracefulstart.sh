@@ -15,23 +15,7 @@ testdir=`dirname $0`
 #Called by other tests to get PRM up
 setup() {
 
-# restart corosync
-runcmd_all /etc/init.d/corosync start 1> /dev/null
-sleep 10
-
-# start pacemaker
-runcmd_all /etc/init.d/pacemaker start 1> /dev/null
-sleep 20
-
-
-#load configuration
-cat $testdir/base_config.crm | runcmd $SSH1 'cat - > /tmp/config.crm'
-runcmd $SSH1 'crm configure load update /tmp/config.crm'
-
-online_all
-
-sleep 10
-
+	allsetup
 } 
 
 runtest() {
@@ -65,16 +49,8 @@ runtest() {
 #Called by other test to get PRM down
 cleanup() {
 
-    # stop pacemaker
-    runcmd_all /etc/init.d/pacemaker stop 1> /dev/null
-    sleep 10
-
-    # stop pacemaker
-    runcmd_all /etc/init.d/corosync stop 1> /dev/null
-    sleep 10
-
-    runcmd_all 'rm -f /var/lib/heartbeat/crm/*' 1> /dev/null
-    
+   allcleanup
+ 
 }
 
 
