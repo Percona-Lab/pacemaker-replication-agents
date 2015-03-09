@@ -78,15 +78,30 @@ online_all() {
 }
 
 crm_master() {
-    runcmd "$SSH1" "crm_mon -1 | grep 'Masters:' | sed 's/\s*Masters:\s\[\s\(.*\)\s\]/\1/'"
+    if [ ! -z "$1" ]; then
+       	SSH=$1
+    else
+       	SSH=${SSH1}
+    fi
+    runcmd "$SSH" "crm_mon -1 | grep 'Masters:' | sed 's/\s*Masters:\s\[\s\(.*\)\s\]/\1/'"
 }
 
 crm_slaves() {
-    runcmd "$SSH1" "crm_mon -1 | grep 'Slaves:' | sed 's/\s*Slaves:\s\[\s\(.*\)\s\]/\1/'"
+    if [ ! -z "$1" ]; then
+       	SSH=$1
+    else
+       	SSH=${SSH1}
+    fi
+    runcmd "$SSH" "crm_mon -1 | grep 'Slaves:' | sed 's/\s*Slaves:\s\[\s\(.*\)\s\]/\1/'"
 }
 
 crm_nodes() {
-    runcmd "$SSH1" "crm_mon -1 | grep 'Online:' | sed 's/\s*Online:\s\[\s\(.*\)\s\]/\1/'"
+    if [ ! -z "$1" ]; then
+       	SSH=$1
+    else
+       	SSH=${SSH1}
+    fi
+    runcmd "$SSH" "crm_mon -1 | grep 'Online:' | sed 's/\s*Online:\s\[\s\(.*\)\s\]/\1/'"
 }
 
 check_master() {

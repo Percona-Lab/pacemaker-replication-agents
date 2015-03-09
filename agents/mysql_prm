@@ -68,7 +68,7 @@
 # Fill in some defaults if no values are specified
 HOSTOS=`uname`
 if [ "X${HOSTOS}" = "XOpenBSD" ];then
-   OCF_RESKEY_binary_default="/usr/local/bin/mysqld_safe"
+   OCF_RESKEY_binary_default="/usr/local/bin/mysqld"
    OCF_RESKEY_config_default="/etc/my.cnf"
    OCF_RESKEY_datadir_default="/var/mysql"
    OCF_RESKEY_user_default="_mysql"
@@ -77,7 +77,7 @@ if [ "X${HOSTOS}" = "XOpenBSD" ];then
    OCF_RESKEY_pid_default="/var/mysql/mysqld.pid"
    OCF_RESKEY_socket_default="/var/run/mysql/mysql.sock"
 else
-   OCF_RESKEY_binary_default="/usr/bin/safe_mysqld"
+   OCF_RESKEY_binary_default="/usr/sbin/mysqld"
    OCF_RESKEY_config_default="/etc/my.cnf"
    OCF_RESKEY_datadir_default="/var/lib/mysql"
    OCF_RESKEY_user_default="mysql"
@@ -86,6 +86,8 @@ else
    OCF_RESKEY_pid_default="/var/run/mysql/mysqld.pid"
    OCF_RESKEY_socket_default="/var/lib/mysql/mysql.sock"
 fi
+
+OCF_RESKEY_binary_prefix_default=""
 OCF_RESKEY_client_binary_default="mysql"
 OCF_RESKEY_test_user_default="root"
 OCF_RESKEY_test_table_default="mysql.user"
@@ -101,54 +103,50 @@ OCF_RESKEY_backup_lockfile_default="/var/lock/innobackupex"
 OCF_RESKEY_booth_master_ticket_default="ticketMaster"
 OCF_RESKEY_async_stop_default=0
 OCF_RESKEY_try_restart_crashed_master_default=1
+OCF_RESKEY_prm_binlog_parser_path_default=`which prm_binlog_parser 2> /dev/null`
 
 : ${OCF_RESKEY_binary=${OCF_RESKEY_binary_default}}
 MYSQL_SBINDIR=`dirname ${OCF_RESKEY_binary}`
-
+: ${OCF_RESKEY_binary_prefix=${OCF_RESKEY_binary_prefix_default}}
 : ${OCF_RESKEY_client_binary=${OCF_RESKEY_client_binary_default}}
-
 : ${OCF_RESKEY_config=${OCF_RESKEY_config_default}}
 : ${OCF_RESKEY_datadir=${OCF_RESKEY_datadir_default}}
-
 : ${OCF_RESKEY_user=${OCF_RESKEY_user_default}}
 : ${OCF_RESKEY_group=${OCF_RESKEY_group_default}}
-
 : ${OCF_RESKEY_log=${OCF_RESKEY_log_default}}
 : ${OCF_RESKEY_pid=${OCF_RESKEY_pid_default}}
 : ${OCF_RESKEY_socket=${OCF_RESKEY_socket_default}}
-
 : ${OCF_RESKEY_test_user=${OCF_RESKEY_test_user_default}}
 : ${OCF_RESKEY_test_table=${OCF_RESKEY_test_table_default}}
 : ${OCF_RESKEY_test_passwd=${OCF_RESKEY_test_passwd_default}}
-
 : ${OCF_RESKEY_enable_creation=${OCF_RESKEY_enable_creation_default}}
 : ${OCF_RESKEY_additional_parameters=${OCF_RESKEY_additional_parameters_default}}
-
 : ${OCF_RESKEY_replication_user=${OCF_RESKEY_replication_user_default}}
 : ${OCF_RESKEY_replication_passwd=${OCF_RESKEY_replication_passwd_default}}
 : ${OCF_RESKEY_replication_port=${OCF_RESKEY_replication_port_default}}
 : ${OCF_RESKEY_replication_options=${OCF_RESKEY_replication_options_default}}
-
 : ${OCF_RESKEY_max_slave_lag=${OCF_RESKEY_max_slave_lag_default}}
 : ${OCF_RESKEY_evict_outdated_slaves=${OCF_RESKEY_evict_outdated_slaves_default}}
-
 : ${OCF_RESKEY_reader_attribute=${OCF_RESKEY_reader_attribute_default}}
 : ${OCF_RESKEY_reader_failcount=${OCF_RESKEY_reader_failcount_default}}
-
 : ${OCF_RESKEY_backup_lockfile=${OCF_RESKEY_backup_lockfile_default}}
-
 : ${OCF_RESKEY_geo_remote_IP}=""
 : ${OCF_RESKEY_booth_master_ticket}=${OCF_RESKEY_booth_master_ticket_default}
 : ${OCF_RESKEY_post_promote_script}=""
-: ${OCF_RESKEY_prm_binlog_parser_path}="`which prm_binlog_parser 2> /dev/null`"
-
+: ${OCF_RESKEY_prm_binlog_parser_path=${OCF_RESKEY_prm_binlog_parser_path_default}}
 : ${OCF_RESKEY_async_stop=${OCF_RESKEY_async_stop_default}}
 : ${OCF_RESKEY_try_restart_crashed_master=${OCF_RESKEY_try_restart_crashed_master_default}}
+
 
 #######################################################################
 # Convenience variables
 
 MYSQL=$OCF_RESKEY_client_binary
+#Add a timeout to the mysql client, no commands should take more than 2s
+if [ -x "/usr/bin/timeout" ]; then
+   MYSQL="/usr/bin/timeout 2 $MYSQL"
+fi
+
 MYSQL_BINDIR=`dirname ${OCF_RESKEY_client_binary}`
 
 MYSQL_OPTIONS_LOCAL="-A -S $OCF_RESKEY_socket --connect_timeout=10"
@@ -221,6 +219,15 @@ Location of the MySQL server binary
 </longdesc>
 <shortdesc lang="en">MySQL server binary</shortdesc>
 <content type="string" default="${OCF_RESKEY_binary_default}" />
+</parameter>
+
+<parameter name="binary_prefix" unique="0" required="0">
+<longdesc lang="en">
+A prefix to the MySQL server binary. I could be for example a LD_PRELOAD or 
+a call to numactl.
+</longdesc>
+<shortdesc lang="en">MySQL server binary prefix</shortdesc>
+<content type="string" default="${OCF_RESKEY_binary_prefix_default}" />
 </parameter>
 
 <parameter name="client_binary" unique="0" required="0">
@@ -526,6 +533,44 @@ END
 }
 
 # Convenience functions
+
+get_last_binlog() {
+   local binlog_files
+   local maxEntries
+   local lastNSec
+   local Ts
+   local startDt
+   local bltempfile
+   
+   binlog_files=$1
+   maxEntries=$2
+   lastNSec=$3
+
+   Ts=`$MYSQL_BINDIR/mysqlbinlog $1 | grep -A6 Xid | tail -n 10 | grep TIMESTAMP | sed -r 's/SET TIMESTAMP=([0-9]*).*/\1/'`
+   Ts=$(($Ts-$lastNSec))
+   startDt=`date -d @$TS +'%Y-%m-%d %H:%M:%S'`
+
+   md5=''
+   queryok=0
+   bltempfile=`mktemp ${HA_RSCTMP}/${OCF_RESOURCE_INSTANCE}.XXXXXX`
+   ( for blf in $1; do {
+      echo "$blf@"
+      $MYSQL_BINDIR/mysqlbinlog --start-datetime="$startDt" $blf | \
+      ( while read line; do
+         if [[ $line =~ ^\# ]]; then
+            if [[ $line =~ .*end_log_pos\ ([0-9]*).*Xid\ =\ [0-9]*$ ]]; then
+               echo "${BASH_REMATCH[1]},`md5sum $tempfile | cut -d' ' -f1`"
+               echo -n '' > $bltempfile
+            fi
+         else
+            echo "${line}" >> $bltempfile
+         fi
+      done ) 
+   done ) | tail -n $maxEntries
+   echo "@"
+   rm -f $bltempfile
+}
+
 
 set_read_only() {
    # Sets or unsets read-only mode. Accepts one boolean as its
@@ -1538,7 +1583,7 @@ mysql_start_low() {
       mysql_extra_params="$mysql_extra_params --skip-slave-start --read-only"
    fi
    
-   ${OCF_RESKEY_binary} --defaults-file=$OCF_RESKEY_config \
+   ${OCF_RESKEY_binary_prefix} ${OCF_RESKEY_binary} --defaults-file=$OCF_RESKEY_config \
    --pid-file=$OCF_RESKEY_pid \
    --socket=$OCF_RESKEY_socket \
    --datadir=$OCF_RESKEY_datadir \
@@ -1686,7 +1731,7 @@ mysql_promote() {
    
    master_crashed_ts=`$CRM_ATTR_MASTER_CRASHED_TS --query`
             
-   if [ ! -z "$master_crashed_ts" -a "${#OCF_RESKEY_prm_binlog_parser_path}" -gt "0" ]; then
+   if [ ! -z "$master_crashed_ts" ]; then
       if [ `date +%s` -lt "$((${master_crashed_ts}+3600))" ]; then
          # Master crashed less than 1h ago, let's publish the last trx
          
@@ -1705,26 +1750,24 @@ mysql_promote() {
          
          tmpfiletrx=`mktemp ${HA_RSCTMP}/trx.${OCF_RESOURCE_INSTANCE}.XXXXXX`
          
-         ( echo -n "${last_binlog_file}@";$OCF_RESKEY_prm_binlog_parser_path ${log_bin_path}/${last_binlog_file} | tail -n 3000 ) > $tmpfiletrx
+         # Are we at the beginning of a binlog file, if so mtime of the previous will
+         # be less than 1min
+         last_binlog_number=`echo $last_binlog_file | cut -d'.' -f2 | sed -ne "s/^0*\([1-9][0-9]*\)$/\1/p"`
+         prev_binlog_number=$(($last_binlog_number-1))
+         last_binlog_file_prefix="`echo $last_binlog_file | cut -d'.' -f1`.${last_binlog_number}"
          
-         # Do we have 3000 trx?
-         nb_trx=`cat $tmpfiletrx | wc -l`
-         if [ "$nb_trx" -lt "3000" ]; then
-            # we have less than 3000, let's try the previous file
-            nb_trx=$((3000-$nb_trx))  #remaining
-            
-            last_binlog_number=`echo $last_binlog_file | cut -d'.' -f2 | sed -ne "s/^0*\([1-9][0-9]*\)$/\1/p"`
-            last_binlog_number=$(($last_binlog_number-1))
-            
-            # re-adding the 0 padding
-            while [ "${#last_binlog_number}" -lt "6" ]; do
-                last_binlog_number="0${last_binlog_number}"
-            done
-            
-            last_binlog_file="`echo $last_binlog_file | cut -d'.' -f1`.${last_binlog_number}" 
-            if [ -e "${log_bin_path}/$last_binlog_file" ]; then
-                ( echo -n "@${last_binlog_file}@";$OCF_RESKEY_prm_binlog_parser_path ${log_bin_path}/${last_binlog_file} | tail -n $nb_trx ) >> $tmpfiletrx
-            fi
+         # re-adding the 0 padding
+         while [ "${#last_binlog_number}" -lt "6" ]; do
+             prev_binlog_number="0${prev_binlog_number}"
+         done
+         prev_binlog_mtime=`stat -c %Y ${log_bin_path}/${last_binlog_file_prefix}.${prev_binlog_number}`
+         now=`date +%s`
+         tDiff=$(($now-$prev_binlog_mtime))
+         
+         if [ "$tDiff" -lt 60 ]; then
+            ( echo -n "${last_binlog_file}@";get_last_binlog '${log_bin_path}/${last_binlog_file_prefix}.${prev_binlog_number} ${log_bin_path}/${last_binlog_file}' 3000 60 ) > $tmpfiletrx
+         else
+            ( echo -n "${last_binlog_file}@";get_last_binlog ${log_bin_path}/${last_binlog_file} 3000 60 ) > $tmpfiletrx
          fi
          
          #now we load all that to the cib so that it reaches the other nodes
@@ -1877,7 +1920,7 @@ mysql_notify() {
             # Is this following a recent master crash?
             master_crashed_ts=`$CRM_ATTR_MASTER_CRASHED_TS --query`
             
-            if [ ! -z "$master_crashed_ts" -a "${#OCF_RESKEY_prm_binlog_parser_path}" -gt "0" ]; then
+            if [ ! -z "$master_crashed_ts" ]; then
                if [ `date +%s` -lt "$((${master_crashed_ts}+3600))" ]; then
                   # Master crashed less than 1h ago, let's see what our last trx was.  
                   # Since the master crashed, we didn't have the post-demote notification
@@ -1904,7 +1947,7 @@ mysql_notify() {
                
                      #ok now we need to find the md5 of the last trx
                
-                     last_trx_md5=`$OCF_RESKEY_prm_binlog_parser_path ${relaylog_path}/${last_relaylog_file} | tail -n 1 | cut -d',' -f2`
+                     last_trx_md5=`get_last_binlog ${relaylog_path}/${last_relaylog_file} 1 60 | cut -d',' -f2`
                   fi
 
                   if [ ! -z "$last_trx_md5" ]; then
@@ -1970,6 +2013,8 @@ mysql_notify() {
          demote_host=`echo $OCF_RESKEY_CRM_meta_notify_demote_uname|tr -d " "`
          if [ $demote_host = ${HOSTNAME} ]; then
             ocf_log info "post-demote notification for $demote_host"
+            
+            
             set_read_only on
             if [ $? -ne 0 ]; then
                ocf_log err "Failed to set read-only";
@@ -2146,25 +2191,13 @@ if [ $rc -ne 0 ]; then
    esac
 fi
 
-# We check if there is a location constraint against this node
-# where $OCF_RESOURCE_INSTANCE should not be running here i.e.
-# -INFINITY score, if so we ignore monitor call for this node
-contrnt=$(cibadmin -t 2 --query --obj_type constraints\
-   |awk "/rsc=\"$OCF_RESOURCE_INSTANCE\"/,/<\/rsc_location/"\
-   |awk '/score="-INFINITY"/,/<\/rule/'\
-   |egrep "expression attribute=\"#uname\".*operation=\"eq\".*value=\"$HOSTNAME\"" 2> /dev/null)
-
-if [ "$?" -eq "0" ]; then
-   exit $OCF_SUCCESS
-fi
-
 #Global info missing from OCF_RESKEY
 resources=`$CRM_RES --list`
 
 # now we need the master-slave clone set name, need to walk around limitations
 # of older pacemaker
 if [[ "$OCF_RESKEY_crm_feature_set" > "3.0.1" ]]; then
-   glb_master_resource=`echo "$resources" | grep $INSTANCE_ATTR_NAME | awk '{print $3}' | head -n 1`
+   glb_master_resource=`echo "$resources" | egrep "\[$INSTANCE_ATTR_NAME\]" | awk '{print $3}' | head -n 1`
 else
    # older versions of Pacemaker don't write the primitive name in the resources list
    for msr in `echo "$resources" | grep 'Master/Slave' | awk '{print $3}'`; do
@@ -2174,18 +2207,41 @@ else
       fi
    done
 fi
+
+# We check if there is a location constraint against this node
+# where $OCF_RESOURCE_INSTANCE should not be running here i.e.
+# -INFINITY score, if so we ignore monitor call for this node
+contrnt=$(cibadmin --query --xpath "/cib/configuration/constraints/rsc_location[@rsc='${glb_master_resource}']/rule[@score='-INFINITY']/expression[@attribute='#uname' and @value='${HOSTNAME}']" > /dev/null 2> /dev/null)
+
+if [ "$?" -eq "0" ]; then
+   exit $OCF_SUCCESS
+fi
+
 is_master_side
 glb_master_side=$?
 if [ "${#OCF_RESKEY_geo_remote_IP}" -gt "0" -a $glb_master_side -ne 0 ]; then
    # geo_remote_IP is defined, let's query the remote side
    # the variable content will be like: pacemaker-1-1|binlog.000156|107 1
-   glb_remote_info=`$SSH $OCF_RESKEY_geo_remote_IP -l root "$CRM_ATTR_REPL_INFO --query  -q | tr '\n' ' ';$CRM_RES --list | grep -A2 $glb_master_resource | egrep -c 'Master[^\/]'"` 
-   glb_master_exists=`echo $glb_remote_info | awk '{ print $NF }'`
-   if [[ -z "$glb_master_exists" ]]; then
+   glb_remote_info=`$SSH $OCF_RESKEY_geo_remote_IP -l root "$CRM_ATTR_REPL_INFO --query  -q | tr '\n' ' ';$CRM_RES --list | grep -A2 " $glb_master_resource " | egrep -c 'Master[^\/]'"` 
+   # The commands here are boolean tested so if any of them fails we will
+   # not get a MASTER_OK which indicates we got a useful value at least
+   ssh_cmd="$SSH $OCF_RESKEY_geo_remote_IP -l $OCF_RESKEY_geo_remote_user -o ConnectTimeout=3 -o PasswordAuthentication=no -q $OCF_RESKEY_geo_remote_opts"
+   ssh_query="$CRM_ATTR_REPL_INFO --query  -q 2> /dev/null"
+   ssh_query="$ssh_query && $CRM_RES --list | egrep -A2 ' $glb_master_resource ' | egrep -c 'Master[^\/]'"
+   ssh_query="$ssh_query && echo 'MASTER_OK' || echo 'MASTER_NOT_FOUND'"
+   glb_remote_info=`$ssh_cmd "$ssh_query" | tr '\n' ' '`
+   
+   echo "$glb_remote_info" | grep MASTER_OK > /dev/null 2>&1
+   if [ "$?" -ne "0" ]; then
       glb_master_exists=0
-   fi
+   else
+      glb_master_exists=`echo $glb_remote_info | awk '{ print $(NF-1) }'`
+      if [[ -z "$glb_master_exists" ]]; then
+         glb_master_exists=0
+      fi
+   fi   
 else
-   glb_master_exists=`echo "$resources" | egrep -A2 "\[$glb_master_resource\]" | egrep -c 'Master[^\/]'`
+   glb_master_exists=`echo "$resources" | grep -A2 " $glb_master_resource " | egrep -c 'Master[^\/]'`
 fi
 
 if [ "$glb_master_exists" -eq "1" ]; then

@@ -13,6 +13,7 @@
 
 testdir=`dirname $0`
 
+verbose=1
 
 setup() {
 
@@ -20,11 +21,19 @@ allsetup
 
 } 
 
+print_verbose() {
+   if [ "$verbose" -eq "1" ]; then
+	echo $1
+   fi
+}
+
 runtest() {
     local IPSlave0 newmaster cnt
 
     build_assoc_uname_ssh
     master=`check_master`
+    print_verbose "master is: ${master}"
+
 
     # create the table with many large SKs
     (cat <<EOF
@@ -45,24 +54,31 @@ EOF
 
     # get the IP of the first slave
     IPSlave0=`${uname_ssh[${slaves[0]}]} "ifconfig eth0" | grep 'inet adr' | cut -d':' -f2 | cut -d' ' -f1`
+    print_verbose "Slave to delay: ${slaves[0]},  its IP is: $IPSlave0"
 
     # Block network trafic toward ${slaves[0]} coming from 3306
     ${uname_ssh[$master]} "sudo iptables -I OUTPUT -m tcp -p tcp -d $IPSlave0 --sport 3306 -j DROP"
+    print_verbose "Blocking outgoing traffic to: ${slaves[0]}"
 
     # now we insert one row
     echo "insert into test.test_prm_binlog_parser (id) values (1);" | ${uname_ssh[$master]} "sudo $MYSQL"
+    print_verbose "inserted test row"
 
     # Give it some time to replicate to slave[1]
     sleep 1
 
     # We simulate a master crash
     ${uname_ssh[$master]} 'ps fax | egrep "corosync|pacemakerd|mysqld|/usr/lib/pacemaker" | grep -v egrep | awk '\''{ print $1 }'\'' | xargs sudo kill -9'
+    print_verbose "Simulating a crash"
 
     # Give some time for Pacemaker to react
     sleep 40  # corosync token = 3000 and token_retransmits_before_loss_const = 10 so need to be bigger than 30s
 
-    newmaster=`check_master`
+    newmaster=`check_master ${uname_ssh[${slaves[0]}]}`
+    print_verbose "newmaster is $newmaster"
     
+    exit
+
     if [ "$master" == "$newmaster" ]; then
 	local_cleanup
         print_result "$0 Still the same master" $PRM_FAIL
@@ -70,7 +86,7 @@ EOF
 
     if [ "${slaves[0]}" == "$newmaster" ]; then
         local_cleanup
-        print_result "$0 Wrong slave has been promoted!!!" $PRM_FAIL
+        print_result "$0 Wrong slave, ${slaves[0]} has been promoted, it should have been ${slaves[1]}!!!" $PRM_FAIL
     fi
     
     # So, slaves[0] is still a slave, does it have the row?
@@ -89,9 +105,9 @@ EOF
 local_cleanup() {
 
     ${uname_ssh[$master]} "sudo iptables -F OUTPUT"
-    ${uname_ssh[$master]} "sudo service corosync start; sleep 3; sudo service pacemaker start"
+    ${uname_ssh[$master]} "sudo service corosync start; sleep 3; sudo service pacemaker start" > /dev/null
 
-    master=`check_master` # needs to be after the above 2 commands
+    master=`check_master ${slaves[0]}` # needs to be after the above 2 commands
 
     #now, a bit of cleanup before ending
     (cat <<EOF
