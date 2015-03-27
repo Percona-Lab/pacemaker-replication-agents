@@ -101,12 +101,19 @@ crm_nodes() {
     else
        	SSH=${SSH1}
     fi
+    echo "Using: $SSH"
     runcmd "$SSH" "crm_mon -1 | grep 'Online:' | sed 's/\s*Online:\s\[\s\(.*\)\s\]/\1/'"
 }
 
 check_master() {
-    declare -a nodes=( `crm_nodes` )
-    master=`crm_master`
+    if [ ! -z "$1" ]; then
+        SSH=$1
+    else
+        SSH=${SSH1}
+    fi
+
+    declare -a nodes=( `crm_nodes "$SSH"` )
+    master=`crm_master "$SSH"`
     
     if [ "${#master}" -gt "0" ]; then
         #Sanity check
@@ -134,8 +141,9 @@ check_master() {
 
 # build_assoc_uname_ssh must be called before
 check_slaves() {
-    declare -a nodes=( `crm_nodes` )
-    declare -a slaves=( `crm_slaves` )
+
+    declare -a nodes=( `crm_nodes "${uname_ssh[$1]}"` )
+    declare -a slaves=( `crm_slaves "${uname_ssh[$1]}"` )
     local matchnode
     local all_good
     local slave_master
@@ -157,7 +165,7 @@ check_slaves() {
         esac
     done
     
-    target_master=`get_master_IP $1`
+    target_master=`get_master_IP "$1"`
     
     if [ "${#slaves}" -gt "0" ]; then
         #Sanity check
@@ -251,7 +259,7 @@ check_VIPs() {
 
     #writer vip on master
     tmpfile=`mktemp /tmp/prm_test.XXXXXX`
-    ( runcmd "$SSH1" "crm_mon -1" ) > $tmpfile
+    ( runcmd "${uname_ssh[$1]}" "crm_mon -1" ) > $tmpfile
 
     writerok=`cat $tmpfile | grep $WRITER_VIP_PRIMITIVE | grep -c $1`
 
@@ -322,6 +330,7 @@ allcleanup() {
 
     # stop pacemaker
     runcmd_all 'sudo ps fax | grep /usr/lib/pacemaker | grep -v grep | awk '\''{ print $1 }'\'' | xargs sudo kill -9 '
+    runcmd_all 'sudo ps fax | grep pacemaker | grep -v grep | awk '\''{ print $1 }'\'' | xargs sudo kill -9 '
     sleep 1
 
     # stop pacemaker

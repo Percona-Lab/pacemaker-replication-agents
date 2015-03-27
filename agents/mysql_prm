@@ -103,7 +103,6 @@ OCF_RESKEY_backup_lockfile_default="/var/lock/innobackupex"
 OCF_RESKEY_booth_master_ticket_default="ticketMaster"
 OCF_RESKEY_async_stop_default=0
 OCF_RESKEY_try_restart_crashed_master_default=1
-OCF_RESKEY_prm_binlog_parser_path_default=`which prm_binlog_parser 2> /dev/null`
 
 : ${OCF_RESKEY_binary=${OCF_RESKEY_binary_default}}
 MYSQL_SBINDIR=`dirname ${OCF_RESKEY_binary}`
@@ -146,7 +145,7 @@ MYSQL=$OCF_RESKEY_client_binary
 if [ -x "/usr/bin/timeout" ]; then
    MYSQL="/usr/bin/timeout 2 $MYSQL"
 fi
-
+MYSQLBINLOG=`which mysqlbinlog 2> /dev/null`
 MYSQL_BINDIR=`dirname ${OCF_RESKEY_client_binary}`
 
 MYSQL_OPTIONS_LOCAL="-A -S $OCF_RESKEY_socket --connect_timeout=10"
@@ -538,7 +537,7 @@ get_last_binlog() {
    local binlog_files
    local maxEntries
    local lastNSec
-   local Ts
+   local Ts Year Month Day Time
    local startDt
    local bltempfile
    
@@ -546,24 +545,42 @@ get_last_binlog() {
    maxEntries=$2
    lastNSec=$3
 
-   Ts=`$MYSQL_BINDIR/mysqlbinlog $1 | grep -A6 Xid | tail -n 10 | grep TIMESTAMP | sed -r 's/SET TIMESTAMP=([0-9]*).*/\1/'`
+   cp "$binlog_files" /tmp
+
+   Ts=`$MYSQLBINLOG $1 | tail -n 100 | tac | grep Xid | tail -n 1 | sed -r 's/#([0-9]{6}\ [0-9:]{7,8}).*/\1/'`
+   Year=${Ts:0:2}
+   Month=${Ts:2:2}
+   Day=${Ts:4:2}
+   Time=${Ts:7}
+   Ts=`date -d "20${Year}-${Month}-${Day} $Time" +%s`
    Ts=$(($Ts-$lastNSec))
-   startDt=`date -d @$TS +'%Y-%m-%d %H:%M:%S'`
+   startDt=`date -d @$Ts +'%Y-%m-%d %H:%M:%S'`
 
    md5=''
    queryok=0
    bltempfile=`mktemp ${HA_RSCTMP}/${OCF_RESOURCE_INSTANCE}.XXXXXX`
-   ( for blf in $1; do {
-      echo "$blf@"
-      $MYSQL_BINDIR/mysqlbinlog --start-datetime="$startDt" $blf | \
+   ( for blf in $1; do 
+      blf_no_path=`echo "$blf" | rev | cut -d'/' -f1 | rev`
+      echo "$blf_no_path@"
+      $MYSQLBINLOG --base64-output=DECODE-ROWS -vvv --start-datetime="$startDt" $blf | \
       ( while read line; do
-         if [[ $line =~ ^\# ]]; then
-            if [[ $line =~ .*end_log_pos\ ([0-9]*).*Xid\ =\ [0-9]*$ ]]; then
-               echo "${BASH_REMATCH[1]},`md5sum $tempfile | cut -d' ' -f1`"
-               echo -n '' > $bltempfile
+         if [ "$queryok" -eq 1 ]; then
+            if [[ $line =~ ^\# ]]; then
+               if [[ $line =~ .*end_log_pos\ ([0-9]*).*Xid\ =\ [0-9]*$ ]]; then
+                 echo "${BASH_REMATCH[1]},`md5sum $bltempfile | cut -d' ' -f1`"
+                 echo -n '' > $bltempfile
+               else
+                  if [[ $line =~ ^\#\#\# ]]; then
+                     echo "${line}" >> $bltempfile
+                  fi
+               fi
+            else
+               echo "${line}" >> $bltempfile
             fi
          else
-            echo "${line}" >> $bltempfile
+            if [[ $line =~ ^BEGIN ]]; then
+               queryok=1
+            fi
          fi
       done ) 
    done ) | tail -n $maxEntries
@@ -838,7 +855,10 @@ check_slave() {
 
          # Is the datadir almost full
          if check_datadir_state; then
-            $CRM_MASTER -v $master_pref
+            master_crashed_ts=`$CRM_ATTR_MASTER_CRASHED_TS --query --default=0`
+            if [ "$master_crashed_ts" -eq "0" ]; then
+               $CRM_MASTER -v $master_pref
+            fi
          else
             # full so not good for a master
             $CRM_MASTER -v -2147483640
@@ -1043,26 +1063,24 @@ unset_master(){
    # by pre-promote notification
    unset master_host  # need to unset for get_slave_info to run
    get_slave_info
+       
+   # First, where are the relay logs?  That will be easier when the using_multi_config 
+   # branch will be merged.  If the path is not defined, the output will be "."
+   relaylog_path=`${OCF_RESKEY_binary} --defaults-file=$OCF_RESKEY_config --verbose --help --user=$OCF_RESKEY_user | grep -e '^relay-log ' | awk '{ print $2 }'`
+   relaylog_path=`dirname $relaylog_path`
+
+   if [ "$relaylog_path" == "." ]; then
+      relaylog_path=$OCF_RESKEY_datadir
+   fi
    
-   if [ "${#OCF_RESKEY_prm_binlog_parser_path}" -gt "0" ]; then
-      
-      # First, where are the relay logs?  That will be easier when the using_multi_config 
-      # branch will be merged.  If the path is not defined, the output will be "."
-      relaylog_path=`${OCF_RESKEY_binary} --defaults-file=$OCF_RESKEY_config --verbose --help --user=$OCF_RESKEY_user | grep -e '^relay-log ' | awk '{ print $2 }'`
-      relaylog_path=`dirname $relaylog_path`
+   last_relaylog_file="$relay_log_file"
 
-      if [ "$relaylog_path" == "." ]; then
-         relaylog_path=$OCF_RESKEY_datadir
-      fi
-      
-      last_relaylog_file="$relay_log_file"
-
-      #ok now we need to find the md5 of the last trx
-      last_trx_md5=`$OCF_RESKEY_prm_binlog_parser_path ${relaylog_path}/${last_relaylog_file} | tail -n 1 | cut -d',' -f2`
-
-      if [ ! -z "$last_trx_md5" ]; then
-         $CRM_ATTR_NODE_LAST_TRX_MD5 -v $last_trx_md5
-      fi
+   #ok now we need to find the md5 of the last trx
+   last_trx_md5=$(get_last_binlog ${relaylog_path}/${last_relaylog_file} 1 60)
+   last_trx_md5=`echo $last_trx_md5 | cut -d',' -f2`
+   
+   if [ ! -z "$last_trx_md5" ]; then
+      $CRM_ATTR_NODE_LAST_TRX_MD5 -v $last_trx_md5
    fi
    
    mysql_run -Q -sw $MYSQL $MYSQL_OPTIONS_REPL \
@@ -1372,8 +1390,8 @@ mysql_monitor() {
             fi
             
             # Is this following a recent master crash?
-            master_crashed_ts=`$CRM_ATTR_MASTER_CRASHED_TS --query 2>/dev/null`
-            if [ ! -z $master_crashed_ts ]; then
+            master_crashed_ts=`$CRM_ATTR_MASTER_CRASHED_TS --query --default=0`
+            if [ "$master_crashed_ts" -gt "0" ]; then
                if [ `date +%s` -gt "$((${master_crashed_ts}+3600))" ]; then
                   #Let's cleanup the cib
                   $CRM_ATTR_MASTER_CRASHED_TS -D
@@ -1384,8 +1402,9 @@ mysql_monitor() {
       else
          is_slave
          rc=$?
-         # Need to cover for crashed master... no unset_master... or always set
-         # last trx md5...
+         # Need to cover for crashed master... if so, unset_master will set 
+         # the last trx md5 in the cib ... 
+         
          if [ $rc -eq 0 -o "$OCF_RESKEY_CRM_meta_role" = "Slave" ]; then
             unset_master
             set_reader_attr 0
@@ -1754,20 +1773,24 @@ mysql_promote() {
          # be less than 1min
          last_binlog_number=`echo $last_binlog_file | cut -d'.' -f2 | sed -ne "s/^0*\([1-9][0-9]*\)$/\1/p"`
          prev_binlog_number=$(($last_binlog_number-1))
-         last_binlog_file_prefix="`echo $last_binlog_file | cut -d'.' -f1`.${last_binlog_number}"
+         last_binlog_file_prefix="`echo $last_binlog_file | cut -d'.' -f1`"
          
-         # re-adding the 0 padding
-         while [ "${#last_binlog_number}" -lt "6" ]; do
-             prev_binlog_number="0${prev_binlog_number}"
-         done
-         prev_binlog_mtime=`stat -c %Y ${log_bin_path}/${last_binlog_file_prefix}.${prev_binlog_number}`
-         now=`date +%s`
-         tDiff=$(($now-$prev_binlog_mtime))
-         
-         if [ "$tDiff" -lt 60 ]; then
-            ( echo -n "${last_binlog_file}@";get_last_binlog '${log_bin_path}/${last_binlog_file_prefix}.${prev_binlog_number} ${log_bin_path}/${last_binlog_file}' 3000 60 ) > $tmpfiletrx
+         if [ "$prev_binlog_number" -gt 0 ]; then
+            # re-adding the 0 padding
+            while [ "${#prev_binlog_number}" -lt "6" ]; do
+               prev_binlog_number="0${prev_binlog_number}"
+            done
+            prev_binlog_mtime=`stat -c %Y ${log_bin_path}/${last_binlog_file_prefix}.${prev_binlog_number}`
+            now=`date +%s`
+            tDiff=$(($now-$prev_binlog_mtime))
+      
+            if [ "$tDiff" -lt 60 ]; then
+               get_last_binlog '${log_bin_path}/${last_binlog_file_prefix}.${prev_binlog_number} ${log_bin_path}/${last_binlog_file}' 3000 60 > $tmpfiletrx
+            else
+               get_last_binlog ${log_bin_path}/${last_binlog_file} 3000 60 > $tmpfiletrx
+            fi
          else
-            ( echo -n "${last_binlog_file}@";get_last_binlog ${log_bin_path}/${last_binlog_file} 3000 60 ) > $tmpfiletrx
+            get_last_binlog ${log_bin_path}/${last_binlog_file} 3000 60 > $tmpfiletrx
          fi
          
          #now we load all that to the cib so that it reaches the other nodes
@@ -1832,7 +1855,16 @@ mysql_notify() {
          
          # Master-score is normally calculated from slave-lag but it is better to use
          # binlog offset position to pick the most up to date slave
-         master_status_attr=`$CRM_ATTR_REPL_STATUS --query  -q`
+         local Iter=5
+         while [ "$Iter" -gt 0 ]; do
+            master_status_attr=`$CRM_ATTR_REPL_STATUS --query`
+            if [ "$?" -eq 0 ]; then
+               break;
+            else
+               sleep 1
+               let Iter-=1
+            fi
+         done
          
          if [ $? -eq 0 ]; then
             # There's a master status entry although we don't know if it is
@@ -1842,6 +1874,7 @@ mysql_notify() {
             master_max_binlog_size=`echo $master_status_attr | cut -d'|' -f3`
             
             get_slave_info
+            
             if [ $? -eq "$OCF_SUCCESS" ]; then
                # We'll be here only if the master crashed. In the event of
                # a graceful demote, a post-demote notification event would have occurred.
@@ -1870,9 +1903,9 @@ mysql_notify() {
                last_reported_master_file_number=`echo $last_reported_master_file | cut -d'.' -f2 | sed -ne "s/^0*\([1-9][0-9]*\)$/\1/p"`
                master_log_file_number=`echo $master_log_file | cut -d'.' -f2 | sed -ne "s/^0*\([1-9][0-9]*\)$/\1/p"`
                
-               master_score=$(((100000000+\
+               master_score=$((1000000000+(\
                   ($master_log_file_number-$last_reported_master_file_number)*\
-                  $master_max_binlog_size+$master_log_pos-$last_reported_master_pos)/10))
+                  $master_max_binlog_size+$master_log_pos-$last_reported_master_pos)/100))
                
                # now, the caps, the upper cap is unlikely
                if [ $master_score -gt 2147483647 ]; then
@@ -1886,7 +1919,7 @@ mysql_notify() {
                if [ $master_score -lt -2147483647 ]; then
                   master_score=-2147483647
                fi
-               
+                              
                $CRM_MASTER -v $master_score
                
                # Next, we need a reminder that the master crashed and when, that will be
@@ -1895,6 +1928,43 @@ mysql_notify() {
                            
                $CRM_ATTR_MASTER_CRASHED_TS -v `date +%s`
                
+               # Let's give pacemaker some time to realize there are new scores
+               sleep 1
+            
+            else
+                # Apparently we need to help Pacemaker choose the best host.
+                # We'll get here after running pre-promote a first time
+                
+               master_crashed_ts=`$CRM_ATTR_MASTER_CRASHED_TS --query`
+            
+               if [ ! -z "$master_crashed_ts" ]; then
+                  if [ `date +%s` -lt "$((${master_crashed_ts}+3600))" ]; then
+                     highestScore=-2147483647
+                     thisNodeScore=0
+                     for node in $OCF_RESKEY_CRM_meta_notify_slave_uname; do
+                        score=`$CRM_MASTER -N $node -G -q`
+                        if [ "$node" == "$HOSTNAME" ]; then
+                           thisNodeScore=$score
+                        fi
+                        
+                        if [ "$highestScore" -lt "$score" ]; then
+                           highestScore=$score
+                        fi
+                     done
+                     
+                     if [ "$thisNodeScore" -eq "$highestScore" ]; then
+                        if [ "$thisNodeScore" -ne "2147483647" ]; then
+                           # This node should be the next master
+                           $CRM_MASTER -v 2147483647
+                        fi
+                     else
+                        # This node shouldn't be the next master
+                        if [ "$thisNodeScore" -ne "0" ]; then
+                           $CRM_MASTER -v 0
+                        fi
+                     fi
+                  fi
+               fi
             fi
          fi
       ;;
@@ -1914,6 +1984,8 @@ mysql_notify() {
          
          master_host=`echo $OCF_RESKEY_CRM_meta_notify_promote_uname|tr -d " "`
          if [ "$master_host" = ${HOSTNAME} ]; then
+            # Remove the master_crashed_ts attribute on this since there has been a promotion
+            $CRM_ATTR_MASTER_CRASHED_TS -D 2> /dev/null
             ocf_log info "This will be the new master, ignoring post-promote notification."
          else
          
@@ -1947,7 +2019,8 @@ mysql_notify() {
                
                      #ok now we need to find the md5 of the last trx
                
-                     last_trx_md5=`get_last_binlog ${relaylog_path}/${last_relaylog_file} 1 60 | cut -d',' -f2`
+                     last_trx_md5=$(get_last_binlog ${relaylog_path}/${last_relaylog_file} 1 60)
+                     last_trx_md5=`echo $last_trx_md5 | cut -d',' -f2`
                   fi
 
                   if [ ! -z "$last_trx_md5" ]; then
@@ -1956,7 +2029,7 @@ mysql_notify() {
                      
                      #1st file
                      binlog_file=`$CRM_ATTR_LAST_TRX --query | cut -d'@' -f1`
-                     binlog_pos=`$CRM_ATTR_LAST_TRX --query | cut -d'@' -f2 | tr '|' '\n' | grep -A1 $last_trx_md5 | tail -n 1 | cut -d',' -f1`
+                     binlog_pos=`$CRM_ATTR_LAST_TRX --query | cut -d'@' -f2 | tr '|' '\n' | grep $last_trx_md5 | cut -d',' -f1`
                      
                      #found?
                      if [ -z "$binlog_pos" ]; then
@@ -1964,7 +2037,7 @@ mysql_notify() {
                         binlog_file=`$CRM_ATTR_LAST_TRX --query | cut -d'@' -f3`
                         
                         if [ -z "$binlog_file" ]; then
-                           binlog_pos=`$CRM_ATTR_LAST_TRX --query | cut -d'@' -f4 | tr '|' '\n' | grep -A1 $last_trx_md5 | tail -n 1 | cut -d',' -f1`
+                           binlog_pos=`$CRM_ATTR_LAST_TRX --query | cut -d'@' -f4 | tr '|' '\n' | grep $last_trx_md5 | cut -d',' -f1`
                         fi
                      fi
                      
@@ -1976,6 +2049,7 @@ mysql_notify() {
                         # Let's overwrite the glb_local_info variable
                         glb_local_info="`echo $glb_local_info | cut -d'|' -f1`|$binlog_file|$binlog_pos"
                      fi
+                     $CRM_ATTR_NODE_LAST_TRX_MD5 -D
                   fi
                fi
             fi
@@ -1997,6 +2071,9 @@ mysql_notify() {
                ocf_log err "Failed to start slave"
                return $OCF_ERR_GENERIC
             fi
+            
+            # Remove the master_crashed_ts attribute on this node since there has been a promotion
+            $CRM_ATTR_MASTER_CRASHED_TS -D 2> /dev/null
          fi
          return $OCF_SUCCESS
       ;;
@@ -2160,6 +2237,9 @@ if [ "${DEBUG_LOG}" -a -w "${DEBUG_LOG}" -a ! -L "${DEBUG_LOG}" ]; then
       exec 2>&9
       date >&9
       echo "$*" >&9
+      if [ "$OCF_RESKEY_CRM_meta_notify" == "true" ]; then
+         echo "$OCF_RESKEY_CRM_meta_notify_key_type - $OCF_RESKEY_CRM_meta_notify_key_operation" >&9
+      fi
       env | grep OCF_ | sort >&9
       set -x
    else
@@ -2211,7 +2291,7 @@ fi
 # We check if there is a location constraint against this node
 # where $OCF_RESOURCE_INSTANCE should not be running here i.e.
 # -INFINITY score, if so we ignore monitor call for this node
-contrnt=$(cibadmin --query --xpath "/cib/configuration/constraints/rsc_location[@rsc='${glb_master_resource}']/rule[@score='-INFINITY']/expression[@attribute='#uname' and @value='${HOSTNAME}']" > /dev/null 2> /dev/null)
+contrnt=$(timeout 5 cibadmin --query --xpath "/cib/configuration/constraints/rsc_location[@rsc='${glb_master_resource}']/rule[@score='-INFINITY']/expression[@attribute='#uname' and @value='${HOSTNAME}']" > /dev/null 2> /dev/null)
 
 if [ "$?" -eq "0" ]; then
    exit $OCF_SUCCESS
@@ -2222,7 +2302,6 @@ glb_master_side=$?
 if [ "${#OCF_RESKEY_geo_remote_IP}" -gt "0" -a $glb_master_side -ne 0 ]; then
    # geo_remote_IP is defined, let's query the remote side
    # the variable content will be like: pacemaker-1-1|binlog.000156|107 1
-   glb_remote_info=`$SSH $OCF_RESKEY_geo_remote_IP -l root "$CRM_ATTR_REPL_INFO --query  -q | tr '\n' ' ';$CRM_RES --list | grep -A2 " $glb_master_resource " | egrep -c 'Master[^\/]'"` 
    # The commands here are boolean tested so if any of them fails we will
    # not get a MASTER_OK which indicates we got a useful value at least
    ssh_cmd="$SSH $OCF_RESKEY_geo_remote_IP -l $OCF_RESKEY_geo_remote_user -o ConnectTimeout=3 -o PasswordAuthentication=no -q $OCF_RESKEY_geo_remote_opts"

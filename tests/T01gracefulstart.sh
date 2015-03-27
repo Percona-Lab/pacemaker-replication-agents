@@ -36,7 +36,7 @@ runtest() {
     fi
     
 
-    check_VIPs -u $master
+    check_VIPs -u "$master"
     rc=$?    
     if [ "$rc" -ne "$PRM_SUCCESS" ]; then
         print_result "$0" $PRM_FAIL
