@@ -57,8 +57,8 @@ EOF
     print_verbose "Slave to delay: ${slaves[0]},  its IP is: $IPSlave0"
     
     # now we insert one row
-    echo "insert into test.test_prm_binlog_parser (id) values (1);" | ${uname_ssh[$master]} "sudo $MYSQL"
-    print_verbose "inserted a first row"
+    echo "insert into test.test_prm_binlog_parser (id) values (1);insert into test.test_prm_binlog_parser (id) values (2);" | ${uname_ssh[$master]} "sudo $MYSQL"
+    print_verbose "inserted a few rows"
 
     # Make sure it replicates and REPL_STATUS is updated by mysql_monitor on the master
     sleep 5
@@ -68,8 +68,8 @@ EOF
     print_verbose "Blocking outgoing traffic to: ${slaves[0]}"
 
     # now we insert one row
-    echo "insert into test.test_prm_binlog_parser (id) values (2);" | ${uname_ssh[$master]} "sudo $MYSQL"
-    print_verbose "inserted a second row"
+    echo "insert into test.test_prm_binlog_parser (id) values (3);" | ${uname_ssh[$master]} "sudo $MYSQL"
+    print_verbose "inserted another row"
 
     # Give it some time to replicate to slave[1]
     sleep 1
@@ -83,8 +83,6 @@ EOF
 
     newmaster=`check_master "${uname_ssh[${slaves[0]}]}"`
     print_verbose "newmaster is $newmaster"
-    
-    exit
 
     if [ "$master" == "$newmaster" ]; then
 	local_cleanup
@@ -97,11 +95,11 @@ EOF
     fi
     
     # So, slaves[0] is still a slave, does it have the row?
-    cnt=`echo 'select count(*) from test.test_prm_binlog_parser where id=1;' | ${uname_ssh[${slaves[0]}]} "sudo $MYSQL -BN"`
+    cnt=`echo 'select count(*) from test.test_prm_binlog_parser' | ${uname_ssh[${slaves[0]}]} "sudo $MYSQL -BN"`
 
-    if [ "$cnt" -ne 2 ]; then
+    if [ "$cnt" -ne 3 ]; then
         local_cleanup
-        print_result "$0 The second row is missing on the slave!!!" $PRM_FAIL
+        print_result "$0 The last row is missing on the slave!!!" $PRM_FAIL
     fi
 
     local_cleanup	   
@@ -112,9 +110,9 @@ EOF
 local_cleanup() {
 
     ${uname_ssh[$master]} "sudo iptables -F OUTPUT"
-    ${uname_ssh[$master]} "sudo service corosync start; sleep 3; sudo service pacemaker start" > /dev/null
+    ${uname_ssh[$master]} "sudo service corosync start; sleep 3; sudo service pacemaker start" 2> /dev/null > /dev/null
 
-    master=`check_master ${slaves[0]}` # needs to be after the above 2 commands
+    master=`check_master "${uname_ssh[${slaves[0]}]}"` # needs to be after the above 2 commands
 
     #now, a bit of cleanup before ending
     (cat <<EOF

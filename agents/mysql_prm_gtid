@@ -101,6 +101,7 @@ OCF_RESKEY_reader_failcount_default="1"
 OCF_RESKEY_backup_lockfile_default="/var/lock/innobackupex"
 OCF_RESKEY_booth_master_ticket_default="ticketMaster"
 OCF_RESKEY_async_stop_default=0
+OCF_RESKEY_try_restart_crashed_master_default=1
 
 : ${OCF_RESKEY_binary=${OCF_RESKEY_binary_default}}
 MYSQL_BINDIR=`dirname ${OCF_RESKEY_binary}`
@@ -134,6 +135,7 @@ MYSQL_BINDIR=`dirname ${OCF_RESKEY_binary}`
 : ${OCF_RESKEY_booth_master_ticket}=${OCF_RESKEY_booth_master_ticket_default}
 : ${OCF_RESKEY_post_promote_script}=""
 : ${OCF_RESKEY_async_stop=${OCF_RESKEY_async_stop_default}}
+: ${OCF_RESKEY_try_restart_crashed_master=${OCF_RESKEY_try_restart_crashed_master_default}}
 
 #######################################################################
 # Convenience variables
@@ -499,6 +501,17 @@ MySQL before it completed its shutdown, the operation will error out.
 </longdesc>
 <shortdesc lang="en">Asynchronous stop of MySQL</shortdesc>
 <content type="boolean" default="${OCF_RESKEY_async_stop_default}" />
+</parameter>
+
+<parameter name="try_restart_crashed_master" unique="0" required="0">
+<longdesc lang="en">
+If set to true, PRM will try to restart a failed master in place instead of promoting 
+another node.  This can help recover untransmitted binary logs.  However, if you have
+a large database that takes a long time to recovery, this may not be a good option
+for you.
+</longdesc>
+<shortdesc lang="en">Try restarting a crashed master</shortdesc>
+<content type="boolean" default="${OCF_RESKEY_try_restart_crashed_master_default}" />
 </parameter>
 
 </parameters>
@@ -1218,8 +1231,11 @@ mysql_status() {
       
       # This is abnormal, is this host the master defined in the cib?
       # Also confirm it succeed in starting with the socket file
-      if [ "$glb_master_exists" -eq "1" ]; then
-         if [ "$glb_cib_master" =  $(get_local_ip) -a -e "$OCF_RESKEY_socket" ]; then
+      if [ "$glb_master_exists" -eq "1" -a "$glb_cib_master" =  $(get_local_ip) \
+         -a -e "$OCF_RESKEY_socket" ]; then
+         
+         #This is a crashed master
+         if [ "$OCF_RESKEY_try_restart_crashed_master" -eq "1" ]; then      
             # This is the master, let's give it a change to restart
             # that will allow the slaves a better chance to sync but we
             # need to avoid letting it restart forever.  Has it tried to
@@ -1862,7 +1878,7 @@ mysql_run() {
    done
    
    outputfile=`mktemp ${HA_RSCTMP}/mysql_run.${OCF_RESOURCE_INSTANCE}.XXXXXX`
-   error=`"$@" 2>&1 1>$outputfile`
+   error=`timeout 5 "$@" 2>&1 1>$outputfile`
    rc=$?
    if [ "$suppress_56_password_warning" -eq 1 ]; then
       error=`echo "$error" | egrep -v '^Warning: Using a password on the command line'`

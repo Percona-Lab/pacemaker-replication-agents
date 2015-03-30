@@ -533,36 +533,35 @@ END
 
 # Convenience functions
 
+# get the binlog references and md5 of the payload.  Currently unable to report
+# the 1st trx.
 get_last_binlog() {
    local binlog_files
    local maxEntries
    local lastNSec
    local Ts Year Month Day Time
-   local startDt
+   local startAt nlines
    local bltempfile
    
    binlog_files=$1
    maxEntries=$2
-   lastNSec=$3
+   #lastNSec=$3
 
+   # for debugging
    cp "$binlog_files" /tmp
 
-   Ts=`$MYSQLBINLOG $1 | tail -n 100 | tac | grep Xid | tail -n 1 | sed -r 's/#([0-9]{6}\ [0-9:]{7,8}).*/\1/'`
-   Year=${Ts:0:2}
-   Month=${Ts:2:2}
-   Day=${Ts:4:2}
-   Time=${Ts:7}
-   Ts=`date -d "20${Year}-${Month}-${Day} $Time" +%s`
-   Ts=$(($Ts-$lastNSec))
-   startDt=`date -d @$Ts +'%Y-%m-%d %H:%M:%S'`
-
+   let nlines=maxEntries*3+6  # below return 3 lines per Xid + need to skip last 2
+   startAt=`mysqlbinlog -vvv --base64-output=DECODE-ROWS $1 | \
+         grep 'Xid =' -A2 | grep -v '\-\-' | tail -n $nlines | \
+         egrep 'Xid|\# at [0-9]{2,10}' | tac | grep -A2 Xid | \
+         grep '# at ' | tail -n 1 | rev | cut -d' ' -f1 | rev`
    md5=''
    queryok=0
    bltempfile=`mktemp ${HA_RSCTMP}/${OCF_RESOURCE_INSTANCE}.XXXXXX`
    ( for blf in $1; do 
       blf_no_path=`echo "$blf" | rev | cut -d'/' -f1 | rev`
       echo "$blf_no_path@"
-      $MYSQLBINLOG --base64-output=DECODE-ROWS -vvv --start-datetime="$startDt" $blf | \
+      $MYSQLBINLOG --base64-output=DECODE-ROWS -vvv --start-position="$startAt" $blf | \
       ( while read line; do
          if [ "$queryok" -eq 1 ]; then
             if [[ $line =~ ^\# ]]; then
@@ -588,6 +587,15 @@ get_last_binlog() {
    rm -f $bltempfile
 }
 
+# Set the master score, the presence of the master_crashed_ts attribute 
+# presents the update.
+set_master_score() {
+   local master_crashed_ts
+   master_crashed_ts=`$CRM_ATTR_MASTER_CRASHED_TS --query --default=0`
+   if [ "$master_crashed_ts" -eq "0" ]; then
+      $CRM_MASTER -v $1
+   fi
+}
 
 set_read_only() {
    # Sets or unsets read-only mode. Accepts one boolean as its
@@ -732,7 +740,7 @@ check_slave() {
          set_reader_attr 0
          
          #Since replication is broken, not suitable to be a master
-         $CRM_MASTER -v -INF
+         set_master_score -INF
          
          exit $OCF_SUCCESS
          
@@ -809,7 +817,7 @@ check_slave() {
          set_reader_attr 0
          
          # If sql is not running, can't be a master
-         $CRM_MASTER -v -INF   
+         set_master_score -INF   
          
          # Check that the flock tool exists first
          if type flock &>/dev/null; then
@@ -855,13 +863,10 @@ check_slave() {
 
          # Is the datadir almost full
          if check_datadir_state; then
-            master_crashed_ts=`$CRM_ATTR_MASTER_CRASHED_TS --query --default=0`
-            if [ "$master_crashed_ts" -eq "0" ]; then
-               $CRM_MASTER -v $master_pref
-            fi
+            set_master_score $master_pref
          else
             # full so not good for a master
-            $CRM_MASTER -v -2147483640
+            set_master_score -2147483640
          fi
       fi
       
@@ -1074,13 +1079,85 @@ unset_master(){
    fi
    
    last_relaylog_file="$relay_log_file"
+   
+   cp ${relaylog_path}/${last_relaylog_file} /tmp/${last_relaylog_file}
 
    #ok now we need to find the md5 of the last trx
-   last_trx_md5=$(get_last_binlog ${relaylog_path}/${last_relaylog_file} 1 60)
+   last_trx_md5=$(get_last_binlog /tmp/${last_relaylog_file} 1 60)
    last_trx_md5=`echo $last_trx_md5 | cut -d',' -f2`
    
    if [ ! -z "$last_trx_md5" ]; then
       $CRM_ATTR_NODE_LAST_TRX_MD5 -v $last_trx_md5
+   fi
+      
+   # Let's establish the master score based on the following
+   # rule.
+   # score = ((file number diff)*master_max_binlog_size
+   #          + fileposdiff/10 + constante
+   #
+   # All events are at least 10 bytes so dividing by 10 doesn't reduce
+   # the resolution and increases the span.
+   #
+   # Since the master publishes its status only once per few
+   # seconds, the fileposdiff is likely positive.
+   # We'll cap all values to int signed range et target
+   # 1B as the value if a slave is fully in sync with the master
+   
+   # Master-score is normally calculated from slave-lag but it is better to use
+   # binlog offset position to pick the most up to date slave
+   
+   local master_status_attr
+   local Iter=5
+   while [ "$Iter" -gt 0 ]; do
+      master_status_attr=`$CRM_ATTR_REPL_STATUS --query`
+      if [ "$?" -eq 0 ]; then
+         break;
+      else
+         sleep 1
+         let Iter-=1
+      fi
+   done
+   
+   if [ $? -eq 0 ]; then
+      # There's a master status entry although we don't know if it is
+      # a valid one
+      local last_reported_master_file last_reported_master_pos master_max_binlog_size
+      local last_reported_master_file_number master_log_file_number master_score
+      
+      last_reported_master_file=`echo $master_status_attr | cut -d'|' -f1`
+      last_reported_master_pos=`echo $master_status_attr | cut -d'|' -f2`
+      master_max_binlog_size=`echo $master_status_attr | cut -d'|' -f3`
+
+      last_reported_master_file_number=`echo $last_reported_master_file | cut -d'.' -f2 | sed -ne "s/^0*\([1-9][0-9]*\)$/\1/p"`
+      master_log_file_number=`echo $master_log_file | cut -d'.' -f2 | sed -ne "s/^0*\([1-9][0-9]*\)$/\1/p"`
+               
+      master_score=$((1000000000+(\
+         ($master_log_file_number-$last_reported_master_file_number)*\
+         $master_max_binlog_size+$master_log_pos-$last_reported_master_pos)/100))
+               
+      # now, the caps, the upper cap is unlikely
+      if [ $master_score -gt 2147483647 ]; then
+         master_score=2147483647
+      fi
+      
+      # the lower cap could happened if a slave lags behind by
+      # more then 30GB of binlog. In that case... do we really care
+      # if we floor the value
+      
+      if [ $master_score -lt -2147483647 ]; then
+         master_score=-2147483647
+      fi
+                              
+      set_master_score $master_score
+               
+      # Next, we need a reminder that the master crashed and when, that will be
+      # used to publish the last trx in the promote event if we are picket
+      # as the new master.
+                  
+      $CRM_ATTR_MASTER_CRASHED_TS -v `date +%s`
+               
+      # Let's give pacemaker some time to realize there are new scores
+      sleep 1
    fi
    
    mysql_run -Q -sw $MYSQL $MYSQL_OPTIONS_REPL \
@@ -1431,12 +1508,12 @@ mysql_monitor() {
       ocf_log debug "MySQL monitor succeeded (master)";
       if [ "$OCF_RESKEY_CRM_meta_interval" -eq "0" ]; then
          # this is a probe and this server is a master so need to set master_score
-         $CRM_MASTER -v 2147483647
+         set_master_score 2147483647
          set_reader_attr 1
       fi
       
       if ! check_datadir_state; then
-         $CRM_MASTER -v -2147483640
+         set_master_score -2147483640
       fi
       return $OCF_RUNNING_MASTER
    else
@@ -1805,6 +1882,7 @@ mysql_promote() {
    # Existing master gets a higher-than-default master preference, so
    # the cluster manager does not shuffle the master role around
    # unnecessarily
+   $CRM_ATTR_MASTER_CRASHED_TS -D 2> /dev/null
    $CRM_MASTER -v 2147483647
    
    # A master can accept reads
@@ -1832,11 +1910,7 @@ mysql_demote() {
 }
 
 mysql_notify() {
-   local master_crashed_ts last_reported_master_file_number master_status_attr
-   local last_reported_master_file last_reported_master_pos master_max_binlog_size
-   local master_score notify_resource my_resource master_crashed_ts
-   local relaylog_path last_relaylog_file last_trx_md5 binlog_file binlog_pos
-   local strip_last_reported_master_file_number strip_master_log_file_number
+   local master_crashed_ts 
    
    # If not configured as a Stateful resource, we make no sense of
    # notifications.
@@ -1852,116 +1926,53 @@ mysql_notify() {
    
    case "$type_op" in
       'pre-promote')
+         get_slave_info
+         if [ $? -eq "$OCF_SUCCESS" ]; then
+            # We'll be here only if the master crashed and there has been no 
+            # monitor event since. In the event of
+            # a graceful demote, a post-demote notification event would have occurred.
+            # The post-demote include an unset-master that
+            # resets the slave after the completion of the IO and SQL
+            # threads.  The post-demote doesn't run if the master host
+            # crashed.
+            
+            # Unset master will publish the updated master_score and the md5 of the
+            # last trx.  The update of the master_score will trigger another 
+            # pre-promote notification
+            
+            unset_master
          
-         # Master-score is normally calculated from slave-lag but it is better to use
-         # binlog offset position to pick the most up to date slave
-         local Iter=5
-         while [ "$Iter" -gt 0 ]; do
-            master_status_attr=`$CRM_ATTR_REPL_STATUS --query`
-            if [ "$?" -eq 0 ]; then
-               break;
-            else
-               sleep 1
-               let Iter-=1
-            fi
-         done
+         else
+             # Apparently we need to help Pacemaker choose the best host.
+             # We'll get here after running pre-promote a first time because
+             # the previous will have run unset_master 
+             
+            master_crashed_ts=`$CRM_ATTR_MASTER_CRASHED_TS --query`
          
-         if [ $? -eq 0 ]; then
-            # There's a master status entry although we don't know if it is
-            # a valid one
-            last_reported_master_file=`echo $master_status_attr | cut -d'|' -f1`
-            last_reported_master_pos=`echo $master_status_attr | cut -d'|' -f2`
-            master_max_binlog_size=`echo $master_status_attr | cut -d'|' -f3`
-            
-            get_slave_info
-            
-            if [ $? -eq "$OCF_SUCCESS" ]; then
-               # We'll be here only if the master crashed. In the event of
-               # a graceful demote, a post-demote notification event would have occurred.
-               # The post-demote include an unset-master that
-               # resets the slave after the completion of the IO and SQL
-               # threads.  The post-demote doesn't run if the master host
-               # crashed.
-               
-               # Let's establish the master score based on the following
-               # rule.
-               # score = ((file number diff)*master_max_binlog_size
-               #          + fileposdiff/10 + constante
-               #
-               # All events are at least 10 bytes so dividing by 10 doesn't reduce
-               # the resolution and increases the span.
-               #
-               # Since the master publishes its status only once per few
-               # seconds, the fileposdiff is likely positive.
-               # We'll cap all values to int signed range et target
-               # 1B as the value if a slave is fully in sync with the master
-               
-               #First unset_master to allow the application of the relay-log if any
-               #The unset_master will return the last slave status variables.
-               unset_master
-               
-               last_reported_master_file_number=`echo $last_reported_master_file | cut -d'.' -f2 | sed -ne "s/^0*\([1-9][0-9]*\)$/\1/p"`
-               master_log_file_number=`echo $master_log_file | cut -d'.' -f2 | sed -ne "s/^0*\([1-9][0-9]*\)$/\1/p"`
-               
-               master_score=$((1000000000+(\
-                  ($master_log_file_number-$last_reported_master_file_number)*\
-                  $master_max_binlog_size+$master_log_pos-$last_reported_master_pos)/100))
-               
-               # now, the caps, the upper cap is unlikely
-               if [ $master_score -gt 2147483647 ]; then
-                  master_score=2147483647
-               fi
-               
-               # the lower cap could happened if a slave lags behind by
-               # more then 30GB of binlog. In that case... do we really care
-               # if we floor the value
-               
-               if [ $master_score -lt -2147483647 ]; then
-                  master_score=-2147483647
-               fi
-                              
-               $CRM_MASTER -v $master_score
-               
-               # Next, we need a reminder that the master crashed and when, that will be
-               # used to publish the last trx in the promote event if we are picket
-               # as the new master.
-                           
-               $CRM_ATTR_MASTER_CRASHED_TS -v `date +%s`
-               
-               # Let's give pacemaker some time to realize there are new scores
-               sleep 1
-            
-            else
-                # Apparently we need to help Pacemaker choose the best host.
-                # We'll get here after running pre-promote a first time
-                
-               master_crashed_ts=`$CRM_ATTR_MASTER_CRASHED_TS --query`
-            
-               if [ ! -z "$master_crashed_ts" ]; then
-                  if [ `date +%s` -lt "$((${master_crashed_ts}+3600))" ]; then
-                     highestScore=-2147483647
-                     thisNodeScore=0
-                     for node in $OCF_RESKEY_CRM_meta_notify_slave_uname; do
-                        score=`$CRM_MASTER -N $node -G -q`
-                        if [ "$node" == "$HOSTNAME" ]; then
-                           thisNodeScore=$score
-                        fi
-                        
-                        if [ "$highestScore" -lt "$score" ]; then
-                           highestScore=$score
-                        fi
-                     done
+            if [ ! -z "$master_crashed_ts" ]; then
+               if [ `date +%s` -lt "$((${master_crashed_ts}+3600))" ]; then
+                  highestScore=-2147483647
+                  thisNodeScore=0
+                  for node in $OCF_RESKEY_CRM_meta_notify_slave_uname; do
+                     score=`$CRM_MASTER -N $node -G -q`
+                     if [ "$node" == "$HOSTNAME" ]; then
+                        thisNodeScore=$score
+                     fi
                      
-                     if [ "$thisNodeScore" -eq "$highestScore" ]; then
-                        if [ "$thisNodeScore" -ne "2147483647" ]; then
-                           # This node should be the next master
-                           $CRM_MASTER -v 2147483647
-                        fi
-                     else
-                        # This node shouldn't be the next master
-                        if [ "$thisNodeScore" -ne "0" ]; then
-                           $CRM_MASTER -v 0
-                        fi
+                     if [ "$highestScore" -lt "$score" ]; then
+                        highestScore=$score
+                     fi
+                  done
+                  
+                  if [ "$thisNodeScore" -eq "$highestScore" ]; then
+                     if [ "$thisNodeScore" -ne "2147483647" ]; then
+                        # This node should be the next master
+                        $CRM_MASTER -v 2147483647
+                     fi
+                  else
+                     # This node shouldn't be the next master
+                     if [ "$thisNodeScore" -ne "0" ]; then
+                        $CRM_MASTER -v 0
                      fi
                   fi
                fi
@@ -1984,8 +1995,6 @@ mysql_notify() {
          
          master_host=`echo $OCF_RESKEY_CRM_meta_notify_promote_uname|tr -d " "`
          if [ "$master_host" = ${HOSTNAME} ]; then
-            # Remove the master_crashed_ts attribute on this since there has been a promotion
-            $CRM_ATTR_MASTER_CRASHED_TS -D 2> /dev/null
             ocf_log info "This will be the new master, ignoring post-promote notification."
          else
          
@@ -2181,7 +2190,9 @@ mysql_run() {
    done
    
    outputfile=`mktemp ${HA_RSCTMP}/mysql_run.${OCF_RESOURCE_INSTANCE}.XXXXXX`
-   error=`"$@" 2>&1 1>$outputfile`
+   
+   #hard coded limit to 5s
+   error=`timeout 5 "$@" 2>&1 1>$outputfile`
    rc=$?
    if [ "$suppress_56_password_warning" -eq 1 ]; then
       error=`echo "$error" | egrep -v '^Warning: Using a password on the command line'`

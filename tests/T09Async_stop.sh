@@ -15,6 +15,13 @@
 
 testdir=`dirname $0`
 
+verbose=1
+
+print_verbose() {
+   if [ "$verbose" -eq "1" ]; then
+        echo $1
+   fi
+}
 
 setup() {
 
@@ -28,6 +35,7 @@ runtest() {
 
     build_assoc_uname_ssh
     master=`check_master`
+    print_verbose "Master is $master"
 
     # create the table with many large SKs
     (cat <<EOF
@@ -50,6 +58,7 @@ set global innodb_flush_neighbors=0;
 EOF
     ) | ${uname_ssh[$master]} "sudo $MYSQL" 2> /dev/null 
 
+    print_verbose "Insert a set of rows"
     # insert some rows
     ( for i in `seq 1 10000`; do
          uuid=`uuidgen`
@@ -60,6 +69,7 @@ EOF
     # Give it some time to cleanup
     sleep 5
 
+    print_verbose "Throttling iops"
     # now, we throttle the iops
     rootdev=`$SSHC mount | grep $master  | grep lxc | awk '{ print $1 }' | cut -d'/' -f3`
     rootdevmajmin=`$SSHC '(for file in \`ls /sys/dev/block/*/uevent\`; do source $file; echo "$DEVNAME $MAJOR:$MINOR"; done)' | grep $rootdev | awk '{ print $2 }'`
@@ -67,16 +77,18 @@ EOF
     #we use lxc-cgroup to throttle the write iops to 10/s
     $SSHC "sudo lxc-cgroup -n $master blkio.throttle.write_iops_device '$rootdevmajmin 10'"
 
+    print_verbose "doing a large update"
     # The tablespace are fully allocated, let's generate some dirty pages, this normally produces 600+ dirty pages, about 1min 
     # of io bound write load at 10 iops
-    echo "update test.test_prm_async_stop set datamd5=md5(datamd5), datasha1=sha1(datasha1);" | ${uname_ssh[$master]} "sudo $MYSQL"
+    echo "update test.test_prm_async_stop set datamd5=md5(datamd5), datasha1=sha1(datasha1) where id % 5 = 0; update test.test_prm_async_stop set datamd5=md5(datamd5), datasha1=sha1(datasha1) where id % 5 = 1;update test.test_prm_async_stop set datamd5=md5(datamd5), datasha1=sha1(datasha1) where id % 5 = 2;update test.test_prm_async_stop set datamd5=md5(datamd5), datasha1=sha1(datasha1) where id % 5 = 3;update test.test_prm_async_stop set datamd5=md5(datamd5), datasha1=sha1(datasha1) where id % 5 = 4;" | ${uname_ssh[$master]} "sudo $MYSQL"
 
+    print_verbose "Master in standby"
     # At this point, the MySQL instance has many dirty pages and many entries in the change buffer
     # Let's put the node in standby
     ${uname_ssh[$master]} "sudo crm node standby $master"
 
     # Give it some time
-    sleep 5
+    sleep 15 
 
     # Confirm the node is in standby and that mysqld is still running
     declare -a online_nodes=( `crm_nodes` ) 
@@ -98,6 +110,7 @@ EOF
         local_cleanup
         print_result "$0 MySQL is not running" $PRM_FAIL
     fi
+    print_verbose "Previous master in standby and mysqld still running ($mysqldRunning), putting it back online"
 
     # Let's put the node back online 
     ${uname_ssh[$master]} "sudo crm node online $master"
@@ -123,6 +136,8 @@ EOF
         local_cleanup
         print_result "$0 MySQL has different pid, should still be stopping" $PRM_FAIL
     fi
+
+    print_verbose "Mysql is still stopping, no startup"
     
     # Release the iops limitations
     $SSHC "sudo lxc-cgroup -n $master blkio.throttle.write_iops_device '$rootdevmajmin 100000'"

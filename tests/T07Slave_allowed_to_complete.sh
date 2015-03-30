@@ -70,6 +70,7 @@ EOF
 
 local_cleanup() {
     #now, a bit of cleanup before ending
+    newmaster=`check_master`
     (cat <<EOF
 create database if not exists test;
 use test;
