@@ -14,7 +14,7 @@ testdir=`dirname $0`
 
 setup() {
 
-./T01gracefulstart.sh setup
+allsetup
 
 } 
 
@@ -57,7 +57,7 @@ EOF
 
 cleanup() {
 
-./T01gracefulstart.sh cleanup    
+allcleanup    
 
 }
 

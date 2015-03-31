@@ -29,6 +29,7 @@
 #
 # OCF instance parameters:
 #   OCF_RESKEY_binary
+#   OCF_RESKEY_binary_prefix
 #   OCF_RESKEY_client_binary
 #   OCF_RESKEY_config
 #   OCF_RESKEY_datadir
@@ -52,6 +53,8 @@
 #   OCF_RESKEY_reader_failcount
 #   OCF_RESKEY_backup_lockfile
 #   OCF_RESKEY_geo_remote_IP
+#   OCF_RESKEY_geo_remote_user
+#   OCF_RESKEY_geo_remote_opts
 #   OCF_RESKEY_booth_master_ticket
 #   OCF_RESKEY_post_promote_script
 #   OCF_RESKEY_prm_binlog_parser_path
@@ -87,8 +90,8 @@ else
    OCF_RESKEY_socket_default="/var/lib/mysql/mysql.sock"
 fi
 
-OCF_RESKEY_binary_prefix_default=""
 OCF_RESKEY_client_binary_default="mysql"
+OCF_RESKEY_binary_prefix_default=""
 OCF_RESKEY_test_user_default="root"
 OCF_RESKEY_test_table_default="mysql.user"
 OCF_RESKEY_test_passwd_default=""
@@ -130,6 +133,8 @@ MYSQL_SBINDIR=`dirname ${OCF_RESKEY_binary}`
 : ${OCF_RESKEY_reader_failcount=${OCF_RESKEY_reader_failcount_default}}
 : ${OCF_RESKEY_backup_lockfile=${OCF_RESKEY_backup_lockfile_default}}
 : ${OCF_RESKEY_geo_remote_IP}=""
+: ${OCF_RESKEY_geo_remote_user}="root"
+: ${OCF_RESKEY_geo_remote_opts}=""
 : ${OCF_RESKEY_booth_master_ticket}=${OCF_RESKEY_booth_master_ticket_default}
 : ${OCF_RESKEY_post_promote_script}=""
 : ${OCF_RESKEY_prm_binlog_parser_path=${OCF_RESKEY_prm_binlog_parser_path_default}}
@@ -143,8 +148,12 @@ MYSQL_SBINDIR=`dirname ${OCF_RESKEY_binary}`
 MYSQL=$OCF_RESKEY_client_binary
 #Add a timeout to the mysql client, no commands should take more than 2s
 if [ -x "/usr/bin/timeout" ]; then
-   MYSQL="/usr/bin/timeout 2 $MYSQL"
+   TIMEOUT="/usr/bin/timeout 5 "
+else
+   TIMEOUT=""
 fi
+
+MYSQL="$TIMEOUT $MYSQL"
 MYSQLBINLOG=`which mysqlbinlog 2> /dev/null`
 MYSQL_BINDIR=`dirname ${OCF_RESKEY_client_binary}`
 
@@ -154,18 +163,18 @@ MYSQL_OPTIONS_TEST="$MYSQL_OPTIONS_LOCAL --user=$OCF_RESKEY_test_user --password
 MYSQL_LAST_ERR=0
 MYSQL_TOO_MANY_CONN_ERR=1040
 
-CRM_MASTER="${HA_SBIN_DIR}/crm_master -l reboot "
+CRM_MASTER="$TIMEOUT ${HA_SBIN_DIR}/crm_master -l reboot "
 HOSTNAME=`uname -n`
-CRM_ATTR="${HA_SBIN_DIR}/crm_attribute -N $HOSTNAME -q"
+CRM_ATTR="$TIMEOUT ${HA_SBIN_DIR}/crm_attribute -N $HOSTNAME -q"
 INSTANCE_ATTR_NAME=`echo ${OCF_RESOURCE_INSTANCE}| awk -F : '{print $1}'`
-CRM_ATTR_REPL_INFO="${HA_SBIN_DIR}/crm_attribute --type crm_config --name ${INSTANCE_ATTR_NAME}_REPL_INFO -s mysql_replication -q "
-CRM_ATTR_REPL_STATUS="${HA_SBIN_DIR}/crm_attribute --type crm_config --name ${INSTANCE_ATTR_NAME}_REPL_STATUS -s mysql_replication -q "
-CRM_ATTR_LAST_TRX="${HA_SBIN_DIR}/crm_attribute --type crm_config --name ${INSTANCE_ATTR_NAME}_NEW_MASTER_LAST_TRX -s mysql_replication -q"
+CRM_ATTR_REPL_INFO="$TIMEOUT ${HA_SBIN_DIR}/crm_attribute --type crm_config --name ${INSTANCE_ATTR_NAME}_REPL_INFO -s mysql_replication -q "
+CRM_ATTR_REPL_STATUS="$TIMEOUT ${HA_SBIN_DIR}/crm_attribute --type crm_config --name ${INSTANCE_ATTR_NAME}_REPL_STATUS -s mysql_replication -q "
+CRM_ATTR_LAST_TRX="$TIMEOUT ${HA_SBIN_DIR}/crm_attribute --type crm_config --name ${INSTANCE_ATTR_NAME}_NEW_MASTER_LAST_TRX -s mysql_replication -q "
 CRM_ATTR_MASTER_CRASHED_TS="$CRM_ATTR -l reboot --name ${INSTANCE_ATTR_NAME}_master_crashed"
 CRM_ATTR_NODE_LAST_TRX_MD5="$CRM_ATTR -l reboot --name ${INSTANCE_ATTR_NAME}_last_trx_md5"
-CRM_RES="${HA_SBIN_DIR}/crm_resource"
-CRM_TICKET="${HA_SBIN_DIR}/crm_ticket"
-SSH="/usr/bin/ssh "
+CRM_RES="$TIMEOUT ${HA_SBIN_DIR}/crm_resource"
+CRM_TICKET="$TIMEOUT ${HA_SBIN_DIR}/crm_ticket"
+SSH="$TIMEOUT /usr/bin/ssh "
 MAX_BINLOG_SIZE_CACHE="${HA_RSCTMP}/max_binlog_size_cache"
 ASYNC_STOP_WITNESS_FILE="${HA_RSCTMP}/stop_${INSTANCE_ATTR_NAME}"
 OCF_STOPPING=100  #custom error code for async_stop
@@ -457,6 +466,24 @@ in a way that connection doesn't take many seconds.  If empty, the booth type
 behavior is not triggered.
 </longdesc>
 <shortdesc lang="en">IP of the remote cluster</shortdesc>
+<content type="string" default="" />
+</parameter>
+
+<parameter name="geo_remote_user" unique="1" required="0">
+<longdesc lang="en">
+When geo_remote_IP is not empty, this will be the custom SSH user that can be 
+used to connect to remote sites.
+</longdesc>
+<shortdesc lang="en">SSH user for remote-enabled sites</shortdesc>
+<content type="string" default="root" />
+</parameter>
+
+<parameter name="geo_remote_opts" unique="1" required="0">
+<longdesc lang="en">
+When geo_remote_IP is not empty, this will be the custom SSH options that can be
+used to connect to remote sites.
+</longdesc>
+<shortdesc lang="en">SSH options for remote-enabled sites</shortdesc>
 <content type="string" default="" />
 </parameter>
 
@@ -768,7 +795,6 @@ check_slave() {
                # to remove the vip, doing nothing
                :
             else
-               
                set_reader_attr 0
             fi
             
@@ -803,8 +829,6 @@ check_slave() {
                ocf_log warn "We could not start the MySQL Slave IO thread."
             fi
          fi
-         
-         
       fi
       
       if [ "$slave_sql" != 'Yes' ]; then
@@ -917,7 +941,7 @@ set_master() {
    local master_params new_master_log_file new_master_log_pos
   
    if [ "$glb_master_exists" ]; then
-       if [ "${#glb_remote_info}" -gt "0" ]; then
+      if [ "${#glb_remote_info}" -gt "0" ]; then
          # geo_remote_IP is defined, let's do the booth part
          
          if [ $glb_master_side -ne 0 ]; then
@@ -1012,10 +1036,14 @@ unset_master(){
          ocf_log info "MySQL slave has finished reading master binary log"
          break
       fi
-      if grep -i 'Reconnecting after a failed master event read' $tmpfile >/dev/null; then
+      if grep -i 'Waiting to reconnect after' $tmpfile >/dev/null; then
          ocf_log info "Master is down, no more binary logs to come"
          break
-      fi
+      fi      
+      if grep -i 'Reconnecting after a failed' $tmpfile >/dev/null; then
+         ocf_log info "Master is down, no more binary logs to come"
+         break
+      fi      
       if grep -i 'Connecting to master' $tmpfile >/dev/null; then
          ocf_log info "Master is down, no more binary logs to come"
          break
@@ -1375,7 +1403,7 @@ mysql_status() {
    fi
    
    if [ $kill_exit_code -eq 0 ]; then
-      return $OCF_SUCCESS;
+      return $OCF_SUCCESS
    else
       ocf_log $1 "MySQL not running: removing old PID file"
       rm -f $OCF_RESKEY_pid
@@ -1391,12 +1419,12 @@ mysql_status() {
             # that will allow the slaves a better chance to sync but we
             # need to avoid letting it restart forever.  Has it tried to
             # restart within the last hour
-            last_crash_ts=`$CRM_ATTR -l reboot --name ${INSTANCE_ATTR_NAME}_last_crash --query -q`
+            last_crash_ts=`$CRM_ATTR -l reboot --name ${INSTANCE_ATTR_NAME}_last_crash --query -q --default=0`
             
-            if [[ ! -z $last_crash_ts ]]; then
+            if [ "$last_crash_ts" -ne "0" ]; then
                if [ `date +%s` -lt "$((${last_crash_ts}+3600))" ]; then
                   # too soon, multiple crash, let's error out
-                  return $OCF_NOT_RUNNING;
+                  return $OCF_NOT_RUNNING
                fi
             fi
             
@@ -1531,7 +1559,7 @@ mysql_start() {
       set_reader_attr 0
       
       # set master_score to 0 in case mysql crashes on startup
-      $CRM_MASTER -v 0
+      set_master_score 0
    fi
    
    mysql_status info 1   # Adding 2nd param here to get the true state in case
@@ -1541,7 +1569,6 @@ mysql_start() {
       ocf_log info "MySQL already running"
       return $OCF_SUCCESS
    fi
-   
    
    # Is MySQL still stopping, OCF_STOPPING is a custom error code
    if [ "$current_status" = "$OCF_STOPPING" ]; then
@@ -1563,7 +1590,7 @@ mysql_start() {
       
       # Has MySQL stopped in time 
       if [ $count -eq $shutdown_timeout ]; then
-         # No, the restart was too soon
+         # No, the start request was too soon
          ocf_log err "MySQL asked to start while still stopping"
          return $OCF_ERR_GENERIC
       fi
@@ -1605,7 +1632,7 @@ mysql_start() {
       # won't ever promote us in the absence of any explicit
       # preference set by the administrator. We choose a low
       # greater-than-zero preference.
-      $CRM_MASTER -v 1
+      set_master_score 1
       
    fi
    
@@ -1899,12 +1926,12 @@ mysql_promote() {
 
 mysql_demote() {
    if ! mysql_status err; then
-      $CRM_MASTER -v 0
+      set_master_score 0
       exit $OCF_SUCCESS
    else
       # Return master preference to default, so the cluster manager gets
       # a chance to select a new master
-      $CRM_MASTER -v 1
+      set_master_score 1
       exit $OCF_SUCCESS
    fi
 }
@@ -1943,7 +1970,7 @@ mysql_notify() {
             unset_master
          
          else
-             # Apparently we need to help Pacemaker choose the best host.
+             # Apparently we sometimes need to help Pacemaker choose the best host.
              # We'll get here after running pre-promote a first time because
              # the previous will have run unset_master 
              
@@ -2099,8 +2126,6 @@ mysql_notify() {
          demote_host=`echo $OCF_RESKEY_CRM_meta_notify_demote_uname|tr -d " "`
          if [ $demote_host = ${HOSTNAME} ]; then
             ocf_log info "post-demote notification for $demote_host"
-            
-            
             set_read_only on
             if [ $? -ne 0 ]; then
                ocf_log err "Failed to set read-only";
@@ -2190,9 +2215,7 @@ mysql_run() {
    done
    
    outputfile=`mktemp ${HA_RSCTMP}/mysql_run.${OCF_RESOURCE_INSTANCE}.XXXXXX`
-   
-   #hard coded limit to 5s
-   error=`timeout 5 "$@" 2>&1 1>$outputfile`
+   error=`"$@" 2>&1 1>$outputfile`
    rc=$?
    if [ "$suppress_56_password_warning" -eq 1 ]; then
       error=`echo "$error" | egrep -v '^Warning: Using a password on the command line'`
@@ -2247,10 +2270,10 @@ if [ "${DEBUG_LOG}" -a -w "${DEBUG_LOG}" -a ! -L "${DEBUG_LOG}" ]; then
       exec 9>>"$DEBUG_LOG"
       exec 2>&9
       date >&9
-      echo "$*" >&9
       if [ "$OCF_RESKEY_CRM_meta_notify" == "true" ]; then
          echo "$OCF_RESKEY_CRM_meta_notify_key_type - $OCF_RESKEY_CRM_meta_notify_key_operation" >&9
       fi
+      echo "$*" >&9
       env | grep OCF_ | sort >&9
       set -x
    else
@@ -2320,7 +2343,6 @@ if [ "${#OCF_RESKEY_geo_remote_IP}" -gt "0" -a $glb_master_side -ne 0 ]; then
    ssh_query="$ssh_query && $CRM_RES --list | egrep -A2 ' $glb_master_resource ' | egrep -c 'Master[^\/]'"
    ssh_query="$ssh_query && echo 'MASTER_OK' || echo 'MASTER_NOT_FOUND'"
    glb_remote_info=`$ssh_cmd "$ssh_query" | tr '\n' ' '`
-   
    echo "$glb_remote_info" | grep MASTER_OK > /dev/null 2>&1
    if [ "$?" -ne "0" ]; then
       glb_master_exists=0

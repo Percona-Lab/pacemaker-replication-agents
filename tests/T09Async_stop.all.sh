@@ -71,11 +71,7 @@ EOF
 
     print_verbose "Throttling iops"
     # now, we throttle the iops
-    rootdev=`$SSHC mount | grep $master  | grep lxc | awk '{ print $1 }' | cut -d'/' -f3`
-    rootdevmajmin=`$SSHC '(for file in \`ls /sys/dev/block/*/uevent\`; do source $file; echo "$DEVNAME $MAJOR:$MINOR"; done)' | grep $rootdev | awk '{ print $2 }'`
-    
-    #we use lxc-cgroup to throttle the write iops to 10/s
-    $SSHC "sudo lxc-cgroup -n $master blkio.throttle.write_iops_device '$rootdevmajmin 10'"
+    throttle_iops $master 10
 
     print_verbose "doing a large update"
     # The tablespace are fully allocated, let's generate some dirty pages, this normally produces 600+ dirty pages, about 1min 
@@ -95,7 +91,7 @@ EOF
     isOnline=`echo ${online_nodes[@]} | grep -c $master`  # should be 0
     # Sanity check
     if [ "$isOnline" -gt 0 ]; then
-	$SSHC "sudo lxc-cgroup -n $master blkio.throttle.write_iops_device '$rootdevmajmin 100000'"
+	throttle_iops $master 100000
     	${uname_ssh[$master]} "sudo crm node online $master"
         local_cleanup
         print_result "$0 Master is still online" $PRM_FAIL
@@ -105,7 +101,7 @@ EOF
 
     # Sanity check
     if [ ! -n "$mysqldRunning" ]; then
-	$SSHC "sudo lxc-cgroup -n $master blkio.throttle.write_iops_device '$rootdevmajmin 100000'"
+	throttle_iops $master 100000
     	${uname_ssh[$master]} "sudo crm node online $master"
         local_cleanup
         print_result "$0 MySQL is not running" $PRM_FAIL
@@ -123,7 +119,7 @@ EOF
     isOnline=`echo ${online_nodes[@]} | grep -c $master`  # should be 1
     # Sanity check
     if [ "$isOnline" -eq 0 ]; then
-	$SSHC "sudo lxc-cgroup -n $master blkio.throttle.write_iops_device '$rootdevmajmin 100000'"
+	throttle_iops $master 100000
         local_cleanup
         print_result "$0 Master is still standby" $PRM_FAIL
     fi
@@ -132,7 +128,7 @@ EOF
 
     # Sanity check
     if [ "$mysqldRunning" -ne "$mysqldRunning2" ]; then
-	$SSHC "sudo lxc-cgroup -n $master blkio.throttle.write_iops_device '$rootdevmajmin 100000'"
+	throttle_iops $master 100000
         local_cleanup
         print_result "$0 MySQL has different pid, should still be stopping" $PRM_FAIL
     fi
@@ -140,13 +136,15 @@ EOF
     print_verbose "Mysql is still stopping, no startup"
     
     # Release the iops limitations
-    $SSHC "sudo lxc-cgroup -n $master blkio.throttle.write_iops_device '$rootdevmajmin 100000'"
+    throttle_iops $master 100000
 
     # Wait a bit to complete
-    sleep 15
+    sleep 30 
 
     #retest pid of mysql
     mysqldRunning2=`${uname_ssh[$master]} "pidof mysqld"` # should be defined
+    : ${mysqldRunning2}=0
+
     if [ "$mysqldRunning" -eq "$mysqldRunning2" ]; then
         local_cleanup
         print_result "$0 MySQL has still the same pid" $PRM_FAIL
@@ -157,6 +155,8 @@ EOF
 }
 
 local_cleanup() {
+
+    online_all
 
     #now, a bit of cleanup before ending
     (cat <<EOF

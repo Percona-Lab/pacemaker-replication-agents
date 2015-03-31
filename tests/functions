@@ -101,8 +101,12 @@ crm_nodes() {
     else
        	SSH=${SSH1}
     fi
-    echo "Using: $SSH"
+    #echo "Using: $SSH"
     runcmd "$SSH" "crm_mon -1 | grep 'Online:' | sed 's/\s*Online:\s\[\s\(.*\)\s\]/\1/'"
+}
+
+node_unames() {
+	runcmd_all 'uname -n'
 }
 
 check_master() {
@@ -328,9 +332,12 @@ allsetup() {
 
 allcleanup() {
 
+    #unthrottle
+    for n in `node_unames`; do throttle_iops $n 10000; done
+
     # stop pacemaker
-    runcmd_all 'sudo ps fax | grep /usr/lib/pacemaker | grep -v grep | awk '\''{ print $1 }'\'' | xargs sudo kill -9 '
-    runcmd_all 'sudo ps fax | grep pacemaker | grep -v grep | awk '\''{ print $1 }'\'' | xargs sudo kill -9 '
+    runcmd_all 'sudo ps fax | grep /usr/lib/pacemaker | grep -v grep | awk '\''{ print $1 }'\'' | xargs sudo kill -9 ' > /dev/null 2> /dev/null
+    runcmd_all 'sudo ps fax | grep pacemaker | grep -v grep | awk '\''{ print $1 }'\'' | xargs sudo kill -9 ' > /dev/null 2> /dev/null
     sleep 1
 
     # stop pacemaker
@@ -346,5 +353,25 @@ allcleanup() {
 
     runcmd_all 'iptables -F INPUT' 1> /dev/null
     runcmd_all 'iptables -F OUTPUT' 1> /dev/null
+
+}
+
+# This supposes LXC is used for the test cluster
+throttle_iops() {
+    local rootdev rootdevmajmin tmpfile
+
+    node=$1
+    iops=$2
+
+    # now, we throttle the iops
+    rootdev=`$SSHC mount | grep $node  | grep lxc | awk '{ print $1 }' | cut -d'/' -f3`
+    
+    tmpfile=`mktemp`
+    $SSHC '(for file in `ls /sys/dev/block/*/uevent`; do source $file; echo "$DEVNAME $MAJOR:$MINOR"; done)' | grep $rootdev | awk '{ print $2 }' > $tmpfile
+    rootdevmajmin=`cat $tmpfile`
+    rm -f $tmpfile
+
+    #we use lxc-cgroup to throttle the write iops to 10/s
+    $SSHC "sudo lxc-cgroup -n $node blkio.throttle.write_iops_device '$rootdevmajmin $iops'"
 
 }

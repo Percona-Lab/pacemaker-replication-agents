@@ -4,8 +4,8 @@ node PRM-2 \
         attributes p_mysql_mysql_master_IP="10.0.3.65"
 node PRM-3 \
         attributes p_mysql_mysql_master_IP="10.0.3.68"
-primitive p_mysql ocf:percona:mysql_prm \
-        params config="/etc/mysql/my.cnf" pid="/var/run/mysqld/mysqld.pid" socket="/var/run/mysqld/mysqld.sock" replication_user="repl_user" replication_passwd="WhatAPassword" test_user="test_user" test_passwd="test_pass" max_slave_lag="15" evict_outdated_slaves="false" binary="/usr/sbin/mysqld" async_stop="1" prm_binlog_parser_path="/usr/local/bin/prm_binlog_parser" \
+primitive p_mysql ocf:percona:mysql_prm_gtid \
+        params config="/etc/mysql/my.cnf" pid="/var/lib/mysql/mysqld.pid" socket="/var/run/mysqld/mysqld.sock" replication_user="repl_user" replication_passwd="WhatAPassword" test_user="test_user" test_passwd="test_pass" max_slave_lag="15" evict_outdated_slaves="false" binary="/usr/sbin/mysqld" async_stop="1" \
         op monitor interval="5s" role="Master" timeout="30s" OCF_CHECK_LEVEL="1" \
         op monitor interval="2s" role="Slave" timeout="30s" OCF_CHECK_LEVEL="1" \
         op start interval="0" timeout="900s" \
@@ -29,6 +29,9 @@ location No-reader-vip-2-loc reader_vip_2 \
 colocation reader_vip_1_dislike_reader_vip_2 -200: reader_vip_2 reader_vip_1 
 colocation reader_vip_1_dislike_writer_vip -200: reader_vip_1 writer_vip
 colocation reader_vip_2_dislike_writer_vip -200: reader_vip_2 writer_vip
-colocation writer_vip_on_master inf: writer_vip ms_MySQL:Master 
+colocation writer_vip_on_master inf: writer_vip ms_MySQL:Master
 order ms_MySQL_promote_before_vip inf: ms_MySQL:promote writer_vip:start
+property $id="cib-bootstrap-options" \
+        stonith-enabled="false" \
+        no-quorum-policy="ignore" 
 
