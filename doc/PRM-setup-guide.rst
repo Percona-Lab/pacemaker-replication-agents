@@ -318,6 +318,9 @@ Parameter                Description
 binary                   Location of the MySQL server binary. Typically, this will point to the mysqld or the mysqld_safe file.  
                          The recommended value is the the path of the the mysqld binary, be aware it may not be the defautl.
                          *default: /usr/bin/safe_mysqld*
+                         
+binary_prefix            A prefix to put on the mysqld command line.  A common use would be an "LD_PRELOAD" or a call to numactl.
+                         *default: empty*
 
 client_binary            Location of the MySQL client binary.  *default: mysql*
 
@@ -548,13 +551,13 @@ Crash of master
 
 If the node where the master was running is still up, PRM will try to restart it once per hour, this is the best way of insuring no data is lost.  
 
-If it keeps crashing or if the whole master server crashed, a failover will occur.  In such case, PRM will detect the master crashed and will initiate the following procedure if the prm_binlog_parser tool is available and defined in the configuration.
+If it keeps crashing or if the whole master server crashed, a failover will occur.  In such case, PRM will detect the master crashed and will initiate the following procedure:
 
    # The best candidate for the master role is found, based on the amount of binlog downloaded from the crashed master
-   # The newly elected master publishes to the cib the binlog positions and md5 hashes of payload for last 3000 transactions in its binlog with the help of the prm_binlog_parser tool
-   # The other slaves, will use the prm_binlog_parser tool to get the md5 of the last trx in its relay log and will find the corresponding binlog file and position for the transactions published in the cib by the new master.
+   # The newly elected master publishes to the cib the binlog positions and md5 hashes of the payload for last 3000 transactions in its binlog up to 1 minute back in time.
+   # The other slaves, will calculate the md5 of their last trx in their respective relay log and will find the corresponding binlog file and position for the transactions published in the cib by the new master.
    
-Note: This behavior also requires binlog XID events that are only generated with Innodb (not with MyISAM). I also currently cannot deal with "LOAD DATA INTO" operations.
+Note: This behavior also requires binlog XID events that are only generated with Innodb so it doesn't work with MyISAM.
 
 
 Determining the best master candidate
@@ -563,7 +566,7 @@ Determining the best master candidate
 During normal operation, when there's a failover, all slaves are at the same point so that's not critical. It is different when the master crashed, slaves may not all be at the same point and it is very important to pick the most up to date one.  In order to achieve this, the master publishes its current master status at every monitor operation and when PRM needs to determine who's the best candidate, the score will be calculated like this::
    
    master_score=100000000 + ((current_slave_master_log_file_number - last_reported_master_log_file_number) * master_max_binlog_size +
-               current_slave_master_log_pos - last_reported_master_log_pos)/10
+               current_slave_master_log_pos - last_reported_master_log_pos)/100
 
 -------------------------
 Useful Pacemaker commands
@@ -699,9 +702,7 @@ If you break replication by inserting a row on the save in the writeload table, 
 Crash of master
 ---------------
 
-A crash of the ``mysqld`` process, on either the master or the slave should cause Pacemaker to restart it .  If the restart are normal, there's no need for the master role to switch over.  
-
-
+A crash of the ``mysqld`` process, on either the master or the slave should cause Pacemaker to restart it .  If the restart are normal, there's no need for the master role to switch over.  If there are more than one crash in a one hour span, a failover will occur.  
 
 
 Kill of MySQL no restart
