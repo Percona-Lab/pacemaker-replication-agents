@@ -10,7 +10,7 @@ get_last_binlog() {
    bltempfile=`mktemp ${HA_RSCTMP}/${OCF_RESOURCE_INSTANCE}.XXXXXX`
    ( for blf in $1; do 
       blf_no_path=`echo "$blf" | rev | cut -d'/' -f1 | rev`
-      mysqlbinlog --base64-output=DECODE-ROWS -vvv --start-position="$startAt" $blf | \
+      mysqlbinlog --base64-output=DECODE-ROWS -vvv  $blf | \
       ( while read line; do
          if [ "$queryok" -eq 1 ]; then
             if [[ $line =~ ^\# ]]; then
