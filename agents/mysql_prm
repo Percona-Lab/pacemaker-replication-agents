@@ -578,7 +578,7 @@ get_last_binlog() {
    cp "$binlog_files" /tmp
 
    let nlines=maxEntries*3+6  # below return 3 lines per Xid + need to skip last 2
-   startAt=`mysqlbinlog -vvv --base64-output=DECODE-ROWS $1 | \
+   startAt=`$MYSQLBINLOG -vvv --base64-output=DECODE-ROWS $1 | \
          grep 'Xid =' -A2 | grep -v '\-\-' | tail -n $nlines | \
          egrep 'Xid|\# at [0-9]{2,10}' | tac | grep -A2 Xid | \
          grep '# at ' | tail -n 1 | rev | cut -d' ' -f1 | rev`
@@ -879,10 +879,26 @@ check_slave() {
          # still use the seconds behind master value to set our
          # master preference.
          local master_pref
-         master_pref=$((${OCF_RESKEY_max_slave_lag}-${secs_behind}))
-         if [ $master_pref -lt 0 ]; then
-            # Sanitize a below-zero preference to just zero
+         test $secs_behind -eq 0 2>/dev/null
+         if [ $? -eq 2 ]; then
+            # SBM is undefined or not an integer            
             master_pref=0
+            set_reader_attr 0
+         else
+            master_pref=$((${OCF_RESKEY_max_slave_lag}-${secs_behind}))
+            if [ $master_pref -lt 0 ]; then
+               # Sanitize a below-zero preference to just zero
+               master_pref=0
+            fi
+            
+            if [ $secs_behind -gt $OCF_RESKEY_max_slave_lag ]; then
+               set_reader_attr 0
+            else
+               set_reader_attr 1
+            fi
+            
+            #Edge case verification, check if on the right master
+            set_master nologging
          fi
 
          # Is the datadir almost full
@@ -893,22 +909,6 @@ check_slave() {
             set_master_score -2147483640
          fi
       fi
-      
-      # is the slave ok to have a VIP on it
-      test $secs_behind -eq 0 2>/dev/null
-      if [ $? -eq 2 ]; then
-         set_reader_attr 0
-      else
-         if [ $secs_behind -gt $OCF_RESKEY_max_slave_lag ]; then
-            set_reader_attr 0
-         else
-            set_reader_attr 1
-            
-            #Edge case verification, check if on the right master
-            set_master nologging
-         fi
-      fi
-      
       ocf_log debug "MySQL instance running as a replication slave"
    else
       # Instance produced an empty "SHOW SLAVE STATUS" output --
@@ -1356,7 +1356,8 @@ mysql_status() {
    
    override_async_stop=0
    
-   if [ -n $2 ]; then
+   test $2 -eq 0 2>/dev/null
+   if [ $? -ne 2 ]; then
       override_async_stop=$2
    fi
    
@@ -1424,6 +1425,7 @@ mysql_status() {
             if [ "$last_crash_ts" -ne "0" ]; then
                if [ `date +%s` -lt "$((${last_crash_ts}+3600))" ]; then
                   # too soon, multiple crash, let's error out
+                  set_master_score 0
                   return $OCF_NOT_RUNNING
                fi
             fi
@@ -1441,6 +1443,7 @@ mysql_status() {
          else
             $CRM_ATTR -l reboot --name ${INSTANCE_ATTR_NAME}_last_crash -v `date +%s`
             # OCF_ERR_ARGS is a hard error, won't wait for restart
+            set_master_score 0
             return $OCF_ERR_ARGS
          fi
       fi

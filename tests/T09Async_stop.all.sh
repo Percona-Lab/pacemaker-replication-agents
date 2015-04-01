@@ -106,13 +106,25 @@ EOF
         local_cleanup
         print_result "$0 MySQL is not running" $PRM_FAIL
     fi
-    print_verbose "Previous master in standby and mysqld still running ($mysqldRunning), putting it back online"
+    print_verbose "Previous master in standby and mysqld still running ($mysqldRunning), unthrottling"
+
+    throttle_iops $master 100000
+
+    sleep 15
+
+    #retest pid of mysql
+    mysqldRunning2=`${uname_ssh[$master]} "pidof mysqld"` # should not be defined
+    test $secs_behind -eq 0 2>/dev/null
+    if [ $? -ne 2 ]; then
+        local_cleanup
+        print_result "$0 MySQL has not stopped after release iops limiter" $PRM_FAIL
+    fi
 
     # Let's put the node back online 
-    ${uname_ssh[$master]} "sudo crm node online $master"
+    ${uname_ssh[$master]} "sudo crm node online $master; sudo crm resource cleanup p_mysql" > /dev/null 2> /dev/null
 
     # Give it some time
-    sleep 5
+    sleep 15
 
     # Confirm the node is in online and that mysqld is still running
     declare -a online_nodes=( `crm_nodes` ) 
@@ -124,33 +136,18 @@ EOF
         print_result "$0 Master is still standby" $PRM_FAIL
     fi
     
-    mysqldRunning2=`${uname_ssh[$master]} "pidof mysqld"` # should be defined
+    mysqldRunning2=`${uname_ssh[$master]} "pidof mysqld"` # should be defined and different
 
     # Sanity check
-    if [ "$mysqldRunning" -ne "$mysqldRunning2" ]; then
+    if [ "$mysqldRunning" -eq "$mysqldRunning2" ]; then
 	throttle_iops $master 100000
         local_cleanup
-        print_result "$0 MySQL has different pid, should still be stopping" $PRM_FAIL
+        print_result "$0 MySQL has the same pid" $PRM_FAIL
     fi
 
-    print_verbose "Mysql is still stopping, no startup"
+    print_verbose "Mysql is running and previous master is online"
     
-    # Release the iops limitations
-    throttle_iops $master 100000
-
-    # Wait a bit to complete
-    sleep 30 
-
-    #retest pid of mysql
-    mysqldRunning2=`${uname_ssh[$master]} "pidof mysqld"` # should be defined
-    : ${mysqldRunning2}=0
-
-    if [ "$mysqldRunning" -eq "$mysqldRunning2" ]; then
-        local_cleanup
-        print_result "$0 MySQL has still the same pid" $PRM_FAIL
-    else
-	print_result "$0" $PRM_SUCCESS
-    fi
+    print_result "$0" $PRM_SUCCESS
 
 }
 
@@ -160,9 +157,7 @@ local_cleanup() {
 
     #now, a bit of cleanup before ending
     (cat <<EOF
-create database if not exists test;
-use test;
-drop table if exists test_prm_kill_sessions; 
+drop table if exists test.test_prm_async_stop; 
 EOF
     ) | ${uname_ssh[$master]} "sudo $MYSQL"
     ${uname_ssh[$master]} "sudo crm resource cleanup p_mysql"

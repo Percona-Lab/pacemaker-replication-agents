@@ -157,18 +157,6 @@ check_slaves() {
     local target_master
     local verbose=0
     
-    for var in 1 
-    do
-        case "$1" in
-            "-v")
-                verbose=1
-                shift 1;;
-
-            *)
-                ;;
-        esac
-    done
-    
     target_master=`get_master_IP "$1"`
     
     if [ "${#slaves}" -gt "0" ]; then
@@ -200,8 +188,8 @@ check_slaves() {
             sbm=`parse_slave_info Seconds_Behind_Master $tmpfile`
             rm -f $tmpfile
             
-            # trap when slave is stopped that sbm is string "NULL"
-            if [ "$sbm" = "NULL" ]; then
+            test $sbm -eq 0 2>/dev/null
+	    if [ $? -eq 2 ]; then
                 sbm=99999999
             fi
             

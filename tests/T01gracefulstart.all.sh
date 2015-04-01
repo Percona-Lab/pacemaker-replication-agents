@@ -26,20 +26,20 @@ runtest() {
     rc=$?
     
     if [ "$rc" -ne "$PRM_SUCCESS" ]; then
-        print_result "$0" $PRM_FAIL
+        print_result "$0 No master" $PRM_FAIL
     fi
     
     check_slaves $master
     rc=$?    
     if [ "$rc" -ne "$PRM_SUCCESS" ]; then
-        print_result "$0" $PRM_FAIL
+        print_result "$0 Slaves not OK" $PRM_FAIL
     fi
     
 
     check_VIPs -u "$master"
     rc=$?    
     if [ "$rc" -ne "$PRM_SUCCESS" ]; then
-        print_result "$0" $PRM_FAIL
+        print_result "$0 VIPs not OK" $PRM_FAIL
     else
         print_result "$0" $PRM_SUCCESS
     fi

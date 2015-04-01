@@ -25,14 +25,17 @@ runtest() {
 
     #Demote/promote
     runcmd "$SSH1" "crm node standby $master1"
-    sleep 10
+    sleep 20
 
     master2=`check_master`
     rc=$?    
     if [ "$rc" -ne "$PRM_SUCCESS" -o "$master1" = "$master2" ]; then
-        echo "check_master failed or same master"
-        print_result "$0" $PRM_FAIL
+        print_result "$0 check_master failed or same master" $PRM_FAIL
     fi
+
+    if [ "$master2" == "No master has been promoted" ]; then
+	print_result "$0 No master has been promoted" $PRM_FAIL
+    fi	
 
     check_slaves $master2
     rc=$?    

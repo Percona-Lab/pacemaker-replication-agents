@@ -23,7 +23,7 @@ do
 	fi
 	allcleanup
 	allsetup
-	sleep 10
+	sleep 20
 done
 
 echo "Total: $total, Success: $success, Failed: $failed"

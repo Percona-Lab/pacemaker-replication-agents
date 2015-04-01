@@ -44,13 +44,17 @@ runtest() {
     runcmd "${uname_ssh[$master1]}" 'kill -9 `pidof mysqld`'
 
     #wait a bit
-    sleep 20
+    sleep 30
 
     # Should have failed over
     master2=`check_master`
     if [ "$master1" = "$master2" ]; then
     	local_cleanup
         print_result "$0 Same master" $PRM_FAIL
+    fi
+
+    if [ "$master2" == "No master has been promoted" ]; then
+        print_result "$0 No master has been promoted" $PRM_FAIL
     fi
 
     check_slaves $master2
