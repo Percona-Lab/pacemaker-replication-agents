@@ -1,0 +1,23 @@
+1. set grants on 1
+
+grant replication client, replication slave on *.* to repl_user@'%' identified by 'WhatAPassword';
+grant replication client, replication slave, SUPER, PROCESS, RELOAD on *.* to repl_user@'localhost' identified by 'WhatAPassword';
+grant select ON mysql.user to test_user@'localhost' identified by 'test_pass';
+
+2. stop mysql on all 
+
+3. Copy /var/lib/mysql from 1 to others
+
+4. Edit my.cnf
+
+#bind-address           = 127.0.0.1
+server-id               = 1  # unique per host
+log_bin                 = /var/log/mysql/mysql-bin.log
+expire_logs_days        = 2
+max_binlog_size         = 100M
+
+5. uuid
+
+edit /var/lib/mysql/auto.cnf, generate new uuid
+
+6. Deploy the agent
