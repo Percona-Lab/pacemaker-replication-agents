@@ -2126,25 +2126,28 @@ mysql_notify() {
          demote_host=`echo $OCF_RESKEY_CRM_meta_notify_demote_uname|tr -d " "`
          if [ $demote_host = ${HOSTNAME} ]; then
             ocf_log info "post-demote notification for $demote_host"
-            set_read_only on
-            if [ $? -ne 0 ]; then
-               ocf_log err "Failed to set read-only";
-               return $OCF_ERR_GENERIC;
-            fi
             
-            # Must kill all existing user threads because they are still Read/write
-            # in order for the slaves to complete the read of binlogs
-            local tmpfile
-            tmpfile=`mktemp ${HA_RSCTMP}/threads.${OCF_RESOURCE_INSTANCE}.XXXXXX`
-            mysql_run -Q -sw -O $MYSQL $MYSQL_OPTIONS_REPL \
-            -e "SHOW PROCESSLIST" > $tmpfile
-            
-            for thread in `awk '$0 !~ /Binlog Dump|system user|event_scheduler|SHOW PROCESSLIST/ && $0 ~ /^[0-9]/ {print $1}' $tmpfile`
+            while ! get_read_only
             do
+               # This may timeout (5s) if there are long running queries (issue #44)
+               set_read_only on
+               
+               # Must kill all existing user threads because they are still Read/write
+               # in order for the slaves to complete the read of binlogs
+               local tmpfile
+               tmpfile=`mktemp ${HA_RSCTMP}/threads.${OCF_RESOURCE_INSTANCE}.XXXXXX`
+               mysql_run -Q -sw -O $MYSQL $MYSQL_OPTIONS_REPL \
+               -e "SHOW PROCESSLIST" > $tmpfile
+               
+               local killthreads=""
+               for thread in `awk '$0 !~ /Binlog Dump|system user|event_scheduler|SHOW PROCESSLIST/ && $0 ~ /^[0-9]/ {print $1}' $tmpfile`
+               do
+                   killthreads="${killthreads} KILL ${thread};"
+               done
                mysql_run -Q -sw $MYSQL $MYSQL_OPTIONS_REPL \
-               -e "KILL ${thread}"
+                  -e "${killthreads}"
+               rm -f $tmpfile
             done
-            rm -f $tmpfile
          else
             ocf_log info "Ignoring post-demote notification execpt for my own demotion."
          fi
