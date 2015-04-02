@@ -545,6 +545,10 @@ mysql_monitor() {
                 ;;
                 
             esac
+        else
+            ocf_log $1 "MySQL is not running, but there is a pidfile"
+            set_reader_attr 0
+            set_writer_attr 0
         fi
     else
         ocf_log $1 "MySQL is not running"
