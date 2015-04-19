@@ -155,11 +155,11 @@ Starting Corosync
 
 Start corosync with ``service corosync start``.  In order to verify corosync is working correctly, run the following command::
 
-   [root@host-01 corosync]# corosync-objctl | grep members | grep ip
+   [root@host-01 corosync]# corosync-cmapctl | grep members | grep ip
    runtime.totem.pg.mrp.srp.members.-723640660.ip=r(0) ip(172.30.222.212) 
    runtime.totem.pg.mrp.srp.members.-1042407764.ip=r(0) ip(172.30.222.193)
 
-This shows the 2 nodes that are member of the cluster.  If you have more than 2 nodes, you should have more similar entries. If you don't have an output similar to the above, make sure iptables is not blocking udp port 5405 and inspect the content of ``/var/log/cluster/corosync.log`` for more information.
+This shows the 2 nodes that are member of the cluster.  If you have more than 2 nodes, you should have more similar entries.  Wit older version of corosync, the tool name is ``corosync-objctl``. If you don't have an output similar to the above, make sure iptables is not blocking udp port 5405 and inspect the content of ``/var/log/cluster/corosync.log`` for more information.
 
 The above corosync configuration file is minimalist, it can be expanded in many ways.  For more information, ``man corosync.conf`` is your friend.
 
@@ -260,10 +260,13 @@ which will not do.  Since it is very recent, we can just download the latest age
    [root@host-01 corosync]# cd /usr/lib/ocf/resource.d/
    [root@host-01 resource.d]# mkdir percona
    [root@host-01 resource.d]# cd percona/
-   [root@host-01 percona]# wget -O mysql -q https://github.com/percona/percona-pacemaker-agents/raw/master/agents/mysql_prm
-   [root@host-01 percona]# chmod u+x mysql
+   [root@host-01 percona]# wget -O mysql -q https://github.com/percona/percona-pacemaker-agents/raw/1.0.0-stable/agents/mysql_prm
+   [root@host-01 percona]# chmod u+x mysql_prm
 
-The procedure must be repeated on all hosts.  We have created a "percona" directory to make sure there would be no conflict with the default MySQL resource agent if the resource-agents package is updated.
+The procedure must be repeated on all hosts.  We have created a "percona" directory to make sure there would be no conflict with the default MySQL resource agent if the resource-agents package is updated. You can also find packages for Debian/Ubuntu and RedHat/Centos in the github repo::
+
+    https://github.com/percona/percona-pacemaker-agents/tree/master/packages/build
+
 
 Configuring Pacemaker
 =====================
@@ -393,7 +396,7 @@ async_stop               Causes the agent not to wait for MySQL to complete its 
 
 So here's a typical primitive declaration::
 
-   primitive p_mysql ocf:percona:mysql \
+   primitive p_mysql ocf:percona:mysql_prm \
          params config="/etc/my.cnf" pid="/var/lib/mysql/mysqld.pid" socket="/var/run/mysqld/mysqld.sock" replication_user="repl_user" \
                 replication_passwd="ola5P1ZMU" max_slave_lag="60" evict_outdated_slaves="false" binary="/usr/libexec/mysqld" \
                 test_user="test_user" test_passwd="2JcXCxKF" \
@@ -406,7 +409,7 @@ An easy way to load the above fragment is to use the ``crm configure edit`` comm
 
 An alterate way to configure this using pcs is::
 
-    pcs resource create p_mysql ocf:percona:mysql \
+    pcs resource create p_mysql ocf:percona:mysql_prm \
                 config="/etc/my.cnf" pid="/var/lib/mysql/mysqld.pid" socket="/var/run/mysqld/mysqld.sock" replication_user="repl_user" \
                 replication_passwd="ola5P1ZMU" max_slave_lag="60" evict_outdated_slaves="false" binary="/usr/libexec/mysqld" \
                 test_user="test_user" test_passwd="2JcXCxKF"
@@ -505,7 +508,7 @@ Here's all the snippets grouped together::
          attributes p_mysql_mysql_master_IP="172.30.222.193"
    node host-02 \
          attributes p_mysql_mysql_master_IP="172.30.222.212"
-   primitive p_mysql ocf:percona:mysql \
+   primitive p_mysql ocf:percona:mysql_prm \
          params config="/etc/my.cnf" pid="/var/lib/mysql/mysqld.pid" socket="/var/run/mysqld/mysqld.sock" replication_user="repl_user" replication_passwd="ola5P1ZMU" max_slave_lag="60" evict_outdated_slaves="false" binary="/usr/libexec/mysqld" test_user="test_user" test_passwd="2JcXCxKF" \                                                                                           
          op monitor interval="5s" role="Master" OCF_CHECK_LEVEL="1" \
          op monitor interval="2s" role="Slave" OCF_CHECK_LEVEL="1" \
