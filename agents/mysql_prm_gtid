@@ -1187,7 +1187,7 @@ get_local_ip() {
 # Determine if the datadir is full or almost full, the threshold is 97%
 check_datadir_state() {
    # Get the free space of the binlogdir
-   FREE_SPC_PCT=`/bin/df $OCF_RESKEY_datadir | /bin/grep -v Filesystem \
+   FREE_SPC_PCT=`/bin/df -P $OCF_RESKEY_datadir | /bin/grep -v Filesystem \
                         | /bin/sed  -e 's/ \+/ /g' | /usr/bin/cut -d' ' -f 5 \
                         | /usr/bin/tr -d '%'`
 
