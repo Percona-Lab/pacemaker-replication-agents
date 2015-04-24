@@ -15,23 +15,7 @@ testdir=`dirname $0`
 #Called by other tests to get PRM up
 setup() {
 
-# restart corosync
-runcmd_all /etc/init.d/corosync start 1> /dev/null
-sleep 10
-
-# start pacemaker
-runcmd_all /etc/init.d/pacemaker start 1> /dev/null
-sleep 20
-
-
-#load configuration
-cat $testdir/base_config.crm | runcmd $SSH1 'cat - > /tmp/config.crm'
-runcmd $SSH1 'crm configure load update /tmp/config.crm'
-
-online_all
-
-sleep 10
-
+	allsetup
 } 
 
 runtest() {
@@ -42,20 +26,20 @@ runtest() {
     rc=$?
     
     if [ "$rc" -ne "$PRM_SUCCESS" ]; then
-        print_result "$0" $PRM_FAIL
+        print_result "$0 No master" $PRM_FAIL
     fi
     
     check_slaves $master
     rc=$?    
     if [ "$rc" -ne "$PRM_SUCCESS" ]; then
-        print_result "$0" $PRM_FAIL
+        print_result "$0 Slaves not OK" $PRM_FAIL
     fi
     
 
-    check_VIPs -u $master
+    check_VIPs -u "$master"
     rc=$?    
     if [ "$rc" -ne "$PRM_SUCCESS" ]; then
-        print_result "$0" $PRM_FAIL
+        print_result "$0 VIPs not OK" $PRM_FAIL
     else
         print_result "$0" $PRM_SUCCESS
     fi
@@ -65,16 +49,8 @@ runtest() {
 #Called by other test to get PRM down
 cleanup() {
 
-    # stop pacemaker
-    runcmd_all /etc/init.d/pacemaker stop 1> /dev/null
-    sleep 10
-
-    # stop pacemaker
-    runcmd_all /etc/init.d/corosync stop 1> /dev/null
-    sleep 10
-
-    runcmd_all 'rm -f /var/lib/heartbeat/crm/*' 1> /dev/null
-    
+   allcleanup
+ 
 }
 
 
@@ -87,143 +63,3 @@ case "$1" in
  *)     echo 'Non implemented'
         exit 1
 esac
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

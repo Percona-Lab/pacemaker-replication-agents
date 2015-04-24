@@ -128,6 +128,14 @@ Password of the mysql user to connect to the local MySQL instance
 <content type="string" default="${OCF_RESKEY_password_default}" />
 </parameter>
 
+<parameter name="client_binary" unique="0">
+<longdesc lang="en">
+MySQL Client Binary path.
+</longdesc>
+<shortdesc lang="en">MySQL client binary path</shortdesc>
+<content type="string" default="${OCF_RESKEY_client_binary_default}" />
+</parameter>
+
 <parameter name="socket" unique="0">
 <longdesc lang="en">
 Unix socket to use in order to connect to MySQL on the host

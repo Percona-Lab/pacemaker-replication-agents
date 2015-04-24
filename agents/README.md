@@ -24,8 +24,8 @@ mysql_prm
 The PRM resource agent for regular async replication.
 
 
-mysql_prm56
+mysql_prm_gtid
 -----------
 
-The PRM resource agent for gtid based replication, as of January 2014, runs tests fine but no field experience.
+The PRM resource agent for gtid based replication.
 
