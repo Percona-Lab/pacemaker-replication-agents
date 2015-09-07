@@ -1189,7 +1189,7 @@ unset_master(){
    fi
    
    mysql_run -Q -sw $MYSQL $MYSQL_OPTIONS_REPL \
-   -e "RESET SLAVE /*!50516 ALL */;"
+   -e "STOP SLAVE;RESET SLAVE /*!50516 ALL */;"
    if [ $? -gt 0 ]; then
       ocf_log err "Failed to reset slave"
       exit $OCF_ERR_GENERIC
