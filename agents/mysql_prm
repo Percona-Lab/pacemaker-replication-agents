@@ -1264,10 +1264,13 @@ get_reader_attr() {
 
 # Stores data for MASTER STATUS from MySQL
 update_data_master_status() {
+   local rc
    
    master_status_file="${HA_RSCTMP}/master_status.${OCF_RESOURCE_INSTANCE}"
    
    mysql_run -Q -sw -O $MYSQL $MYSQL_OPTIONS_REPL -e "SHOW MASTER STATUS\G" > $master_status_file
+   
+   retrun $?
 }
 
 
@@ -1489,22 +1492,28 @@ mysql_monitor() {
             check_slave
          else
             update_data_master_status
-            master_status_attr=`$CRM_ATTR_REPL_STATUS --query  -q`
-            new_master_status_attr="$(get_master_status File)|$(get_master_status Position)|$(get_max_binlog_size)"
-            rm -f $master_status_file
-            if [ "$master_status_attr" != "$new_master_status_attr" ]; then
-               # Doing in bg, no need to wait and that can hang if a node is lost at the same time
-               $CRM_ATTR_REPL_STATUS -v "$new_master_status_attr" &
-            fi
-            
-            # Is this following a recent master crash?
-            master_crashed_ts=`$CRM_ATTR_MASTER_CRASHED_TS --query --default=0`
-            if [ "$master_crashed_ts" -gt "0" ]; then
-               if [ `date +%s` -gt "$((${master_crashed_ts}+3600))" ]; then
-                  #Let's cleanup the cib
-                  $CRM_ATTR_MASTER_CRASHED_TS -D
-                  $CRM_ATTR_LAST_TRX -D
-               fi
+            if [ "$?" -eq "$OCF_SUCCESS" ]; then
+                master_status_attr=`$CRM_ATTR_REPL_STATUS --query  -q`
+                new_master_status_attr="$(get_master_status File)|$(get_master_status Position)|$(get_max_binlog_size)"
+                rm -f $master_status_file
+                if [ "$master_status_attr" != "$new_master_status_attr" ]; then
+                   # Doing in bg, no need to wait and that can hang if a node is lost at the same time
+                   $CRM_ATTR_REPL_STATUS -v "$new_master_status_attr" &
+                fi
+                
+                # Is this following a recent master crash?
+                master_crashed_ts=`$CRM_ATTR_MASTER_CRASHED_TS --query --default=0`
+                if [ "$master_crashed_ts" -gt "0" ]; then
+                   if [ `date +%s` -gt "$((${master_crashed_ts}+3600))" ]; then
+                      #Let's cleanup the cib
+                      $CRM_ATTR_MASTER_CRASHED_TS -D
+                      $CRM_ATTR_LAST_TRX -D
+                   fi
+                fi
+            else
+                # we got an error accessing the master, either it is down or overloaded
+                # Let's give 1 sec before continuing
+                sleep 1
             fi
          fi
       else
