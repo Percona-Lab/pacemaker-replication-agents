@@ -1045,7 +1045,7 @@ unset_master(){
    
       mysql_run -Q -sw -O $MYSQL $MYSQL_OPTIONS_REPL -BN -e "select replace(variable_value,'\n','') as variable_value from information_schema.global_variables where variable_name in ('gtid_executed')" > $slave_status_file               
    
-      executed_gtid=`cat $slave_status_file | sed "s/.*$master_uuid:[0-9]*-\([0-9]*\).*/\1/"`
+      executed_gtid=`cat $slave_status_file | sed -n "s/.*${server_uuid}:[0-9]*-\([0-9]*\).*/\1/"`
    
       rm -f $slave_status_file
    
