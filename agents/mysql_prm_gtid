@@ -1422,6 +1422,9 @@ mysql_monitor() {
       if ! check_datadir_state; then
          set_master_score -2147483640
       fi
+
+      set_reader_attr 1
+
       return $OCF_RUNNING_MASTER
    else
       ocf_log debug "MySQL monitor succeeded";
