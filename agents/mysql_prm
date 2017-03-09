@@ -1281,7 +1281,7 @@ get_master_status() {
 
 # Determines what IP address is attached to the current host.  The output of the
 # crm_attribute command looks like this:
-# scope=nodes  name=IP value=10.2.2.161
+# scope=nodes  name=IP value=10.2.2.1611
 # If the ${INSTANCE_ATTR_NAME}_MYSQL_MASTER_IP node attribute is not defined, fallback is to uname -n
 # The ${INSTANCE_ATTR_NAME}_MYSQL_MASTER_IP is the IP address that will be used for the
 # change master to command.
@@ -1298,7 +1298,7 @@ get_local_ip() {
 # Determine if the datadir is full or almost full, the threshold is 97%
 check_datadir_state() {
    # Get the free space of the binlogdir
-   FREE_SPC_PCT=`/bin/df $OCF_RESKEY_datadir | /bin/grep -v Filesystem \
+   FREE_SPC_PCT=`/bin/df -P $OCF_RESKEY_datadir | /bin/grep -v Filesystem \
                         | /bin/sed  -e 's/ \+/ /g' | /usr/bin/cut -d' ' -f 5 \
                         | /usr/bin/tr -d '%'`
 
@@ -1476,7 +1476,6 @@ mysql_monitor() {
       return $rc
    fi
    
-   
    if [ $OCF_CHECK_LEVEL -gt 0 -a -n "$OCF_RESKEY_test_table" ]; then
       # Check if this instance is configured as a slave, and if so
       # check slave status
@@ -1514,7 +1513,13 @@ mysql_monitor() {
          # the last trx md5 in the cib ... 
          
          if [ $rc -eq 0 -o "$OCF_RESKEY_CRM_meta_role" = "Slave" ]; then
-            unset_master
+            # If there no quorum, we will not reset master
+            # This is optimistic setting as the original master could be part of
+            # majority. If there is no quorum, this node will restart in any case
+            if [ "$cluster_has_quorum" -ne "0" ]; then 
+               ocf_log info "Cluster has quorum, resetting replication"
+               unset_master
+            fi
             set_reader_attr 0
          fi
       fi
@@ -1619,8 +1624,22 @@ mysql_start() {
       # promoted a master before.
       
       if [ "$glb_master_exists" -ne 0 -a "$glb_cib_master" != $(get_local_ip) ]; then
-         ocf_log info "Changing MySQL configuration to replicate from $master_host."
-         set_master
+         # In case of network issues, we need to make sure not to reset replication
+         # because REPL_INFO stored on CIBADMIN can be outdated, if that happens
+         # we will break replication.
+         # First, since this is a slave, let's check for current replication
+         # info, if the master host matches current master IP, we should just 
+         # resume replication, otherwise we should reset.
+         get_slave_info
+         rc=$?
+
+         if [ $rc -eq 0 -a "$glb_cib_master" == "$master_host" ]; then
+            ocf_log info "Current Master_Host matches current cluster master, starting slave"
+         else
+            ocf_log info "Changing MySQL configuration to replicate from $master_host."
+            set_master
+         fi
+
          start_slave
          if [ $? -ne 0 ]; then
             ocf_log err "Failed to start slave"
@@ -2370,6 +2389,10 @@ if [ "$glb_master_exists" -eq "1" ]; then
       glb_cib_master=`echo $glb_local_info | cut -d'|' -f1`
    fi
 fi
+
+# Also check if the cluster has quorum, we may need to preserve some state
+# If there was split brain and the cluster recovers
+cluster_has_quorum=$(timeout 5 cibadmin --query|egrep -c 'have-quorum=\"1\"')
 
 # What kind of method was invoked?
 case "$1" in
