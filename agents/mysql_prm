@@ -2224,7 +2224,7 @@ mysql_run() {
    error=`"$@" 2>&1 1>$outputfile`
    rc=$?
    if [ "$suppress_56_password_warning" -eq 1 ]; then
-      error=`echo "$error" | egrep -v '^Warning: Using a password on the command line'`
+      error=`echo "$error" | grep -v 'Warning'` 
    fi
    output=`cat $outputfile`
    rm -f $outputfile
