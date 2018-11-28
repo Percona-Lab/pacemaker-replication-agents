@@ -1785,10 +1785,19 @@ mysql_stop() {
    /bin/kill $pid > /dev/null
    rc=$?
    if [ $rc != 0 ]; then
-      ocf_log err "MySQL couldn't be stopped"
-      return $OCF_ERR_GENERIC
+      #is MySQL running or not?  It may have crashed, is the process there?
+      if [ -d /proc/${pid} ]; then
+         ocf_log err "MySQL couldn't be stopped"
+         return $OCF_ERR_GENERIC
+      else
+         rm ${OCF_RESKEY_pid}.starting 
+         ocf_log info "MySQL stopped";
+         rm -f /var/lock/subsys/mysqld 2> /dev/null
+         rm -f $OCF_RESKEY_socket 2> /dev/null
+         return $OCF_SUCCESS
+      fi
    fi
-   
+    
    if [ "$OCF_RESKEY_async_stop" -eq "1" ]; then
       #Ok, MySQL is stopping and the async_stop option is set, just put the
       #pid and a timestamp in the witness file and return
