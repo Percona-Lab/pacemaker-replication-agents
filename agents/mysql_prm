@@ -1317,8 +1317,10 @@ check_datadir_state() {
 # Functions invoked by resource manager actions
 
 mysql_validate() {
+	
    check_binary $OCF_RESKEY_binary
    check_binary  $OCF_RESKEY_client_binary
+   check_binary  $MYSQLBINLOG
    
    if [ ! -f $OCF_RESKEY_config ]; then
       ocf_log err "Config $OCF_RESKEY_config doesn't exist";
